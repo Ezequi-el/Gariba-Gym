@@ -1,0 +1,245 @@
+{
+  "entities": {
+    "socio": {
+      "title": "Socio",
+      "description": "Miembro del gimnasio",
+      "type": "object",
+      "properties": {
+        "nombre": { "type": "string" },
+        "email": { "type": "string" },
+        "telefono": { "type": "string" },
+        "fechaInicio": { "type": "string", "format": "date-time" },
+        "fechaVencimiento": { "type": "string", "format": "date-time" },
+        "estado": { "type": "string", "enum": ["Activa", "Vencida", "Baneado"] },
+        "sucursalId": { "type": "string" },
+        "uid": { "type": "string" }
+      },
+      "required": ["nombre", "email", "estado"]
+    },
+    "rutina": {
+      "title": "Rutina",
+      "description": "Plan de entrenamiento para un socio",
+      "type": "object",
+      "properties": {
+        "socioId": { "type": "string" },
+        "nombreSocio": { "type": "string" },
+        "dias": { "type": "array", "items": { "type": "string" } },
+        "ejercicios": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "nombre": { "type": "string" },
+              "series": { "type": "number" },
+              "repeticiones": { "type": "string" },
+              "videoUrl": { "type": "string" }
+            }
+          }
+        },
+        "fechaCreacion": { "type": "string", "format": "date-time" },
+        "sucursalId": { "type": "string" }
+      },
+      "required": ["socioId", "dias", "ejercicios"]
+    },
+    "asistencia": {
+      "title": "Asistencia",
+      "description": "Registro de entrada de un socio",
+      "type": "object",
+      "properties": {
+        "socioId": { "type": "string" },
+        "fecha": { "type": "string", "format": "date-time" },
+        "sucursalId": { "type": "string" }
+      },
+      "required": ["socioId", "fecha"]
+    },
+    "cierre_gym": {
+      "title": "Cierre de Gym",
+      "description": "Días que el gimnasio está cerrado",
+      "type": "object",
+      "properties": {
+        "fecha": { "type": "string", "format": "date" },
+        "motivo": { "type": "string" },
+        "sucursalId": { "type": "string" }
+      },
+      "required": ["fecha"]
+    },
+    "solicitud_rutina": {
+      "title": "Solicitud de Rutina",
+      "description": "Petición de un socio para que le asignen una rutina",
+      "type": "object",
+      "properties": {
+        "socioId": { "type": "string" },
+        "nombreSocio": { "type": "string" },
+        "emailSocio": { "type": "string" },
+        "fechaSolicitud": { "type": "string", "format": "date-time" },
+        "estado": { "type": "string", "enum": ["Pendiente", "Atendida"] },
+        "mensaje": { "type": "string" },
+        "sucursalId": { "type": "string" }
+      },
+      "required": ["socioId", "nombreSocio", "fechaSolicitud", "estado"]
+    },
+    "plantilla_rutina": {
+      "title": "Plantilla de Rutina",
+      "description": "Plantilla reutilizable para crear rutinas",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "icon": { "type": "string" },
+        "dias": { "type": "array", "items": { "$ref": "dia_rutina" } }
+      },
+      "required": ["name", "dias"]
+    },
+    "dia_rutina": {
+      "title": "Día de Rutina",
+      "type": "object",
+      "properties": {
+        "nombre": { "type": "string" },
+        "ejercicios": { "type": "array", "items": { "$ref": "ejercicio_en_plantilla" } }
+      }
+    },
+    "ejercicio_en_plantilla": {
+      "title": "Ejercicio en Plantilla",
+      "type": "object",
+      "properties": {
+        "ejercicioId": { "type": "string" },
+        "nombre": { "type": "string" },
+        "series": { "type": "string" },
+        "repeticiones": { "type": "string" },
+        "descanso": { "type": "string" },
+        "observaciones": { "type": "string" },
+        "rpe": { "type": "string" },
+        "tempo": { "type": "string" },
+        "tipo": { "type": "string", "enum": ["Normal", "Superset", "Dropset", "Circuito"] }
+      }
+    },
+    "ejercicio": {
+      "title": "Ejercicio",
+      "description": "Definición de un ejercicio del catálogo",
+      "type": "object",
+      "properties": {
+        "nombre": { "type": "string" },
+        "musculo": { "type": "string" },
+        "descripcion": { "type": "string" },
+        "videoUrl": { "type": "string" },
+        "equipamiento": { "type": "string" },
+        "categoria": { "type": "string" }
+      },
+      "required": ["nombre", "musculo"]
+    },
+    "venta": {
+      "title": "Venta",
+      "description": "Registro de una transacción",
+      "type": "object",
+      "properties": {
+        "items": { "type": "array", "items": { "type": "object" } },
+        "total": { "type": "number" },
+        "metodoPago": { "type": "string", "enum": ["Efectivo", "Tarjeta"] },
+        "fecha": { "type": "string", "format": "date-time" },
+        "socioId": { "type": "string" },
+        "sucursalId": { "type": "string" }
+      },
+      "required": ["total", "metodoPago", "fecha"]
+    },
+    "sucursal": {
+      "title": "Sucursal",
+      "description": "Ubicación del gimnasio",
+      "type": "object",
+      "properties": {
+        "nombre": { "type": "string" },
+        "direccion": { "type": "string" },
+        "telefono": { "type": "string" },
+        "fechaCreacion": { "type": "string", "format": "date-time" }
+      },
+      "required": ["nombre"]
+    },
+    "inventario_item": {
+      "title": "Item de Inventario",
+      "description": "Producto o servicio a la venta",
+      "type": "object",
+      "properties": {
+        "nombre": { "type": "string" },
+        "precio": { "type": "number" },
+        "tipo": { "type": "string", "enum": ["producto", "servicio"] },
+        "stock": { "type": "number" },
+        "fechaCreacion": { "type": "string", "format": "date-time" }
+      },
+      "required": ["nombre", "precio", "tipo"]
+    },
+    "user_profile": {
+      "title": "Perfil de Usuario",
+      "description": "Datos de staff o admin",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["owner", "manager", "receptionist", "trainer"] },
+        "sucursalId": { "type": "string" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "notification": {
+      "title": "Notificación",
+      "description": "Mensaje para el staff",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "fecha": { "type": "string", "format": "date-time" },
+        "read": { "type": "boolean" }
+      },
+      "required": ["title", "message", "fecha"]
+    }
+  },
+  "firestore": {
+    "socios": {
+      "schema": "socio",
+      "description": "Colección de socios"
+    },
+    "rutinas": {
+      "schema": "rutina",
+      "description": "Colección de rutinas"
+    },
+    "asistencias": {
+      "schema": "asistencia",
+      "description": "Colección de asistencias"
+    },
+    "cierres_gym": {
+      "schema": "cierre_gym",
+      "description": "Colección de días cerrados"
+    },
+    "solicitudes_rutina": {
+      "schema": "solicitud_rutina",
+      "description": "Colección de solicitudes de rutinas"
+    },
+    "plantillas_rutinas": {
+      "schema": "plantilla_rutina",
+      "description": "Colección de plantillas de rutinas"
+    },
+    "ejercicios": {
+      "schema": "ejercicio",
+      "description": "Catálogo de ejercicios"
+    },
+    "ventas": {
+      "schema": "venta",
+      "description": "Colección de ventas"
+    },
+    "sucursales": {
+      "schema": "sucursal",
+      "description": "Colección de sucursales"
+    },
+    "inventario": {
+      "schema": "inventario_item",
+      "description": "Colección de inventario"
+    },
+    "users": {
+      "schema": "user_profile",
+      "description": "Perfiles de usuario"
+    },
+    "notifications": {
+      "schema": "notification",
+      "description": "Colección de notificaciones"
+    }
+  }
+}

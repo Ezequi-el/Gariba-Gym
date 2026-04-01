@@ -1,0 +1,144 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: socios
+    // Fields:
+    //   - nombre: string (required)
+    //   - email: string (optional)
+    //   - fechaInicio: timestamp (required)
+    //   - fechaVencimiento: timestamp (required)
+    //   - estado: string (required, enum: ["Activa", "Vencida"])
+    //   - uid: string (required)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasRole(roles) {
+      return isAuthenticated() && (
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         getUserData().role in roles) ||
+        (request.auth.token.email == "chkereke@gmail.com" && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isAdmin() {
+      return hasRole(['owner', 'manager']);
+    }
+
+    function isStaff() {
+      return hasRole(['owner', 'manager', 'receptionist', 'trainer']);
+    }
+
+    function isTrainer() {
+      return hasRole(['owner', 'manager', 'trainer']);
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Validation Functions
+    function isValidSocio(data) {
+      return data.nombre is string && data.nombre.size() > 0 &&
+             data.estado in ["Activa", "Vencida", "Baneado"] &&
+             data.fechaVencimiento is timestamp;
+    }
+
+    function isValidVenta(data) {
+      return data.total is number && data.total >= 0 &&
+             data.metodoPago in ["Efectivo", "Tarjeta"] &&
+             data.fecha is timestamp;
+    }
+
+    function isValidRutina(data) {
+      return data.socioId is string &&
+             data.dias is list &&
+             data.fechaCreacion is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isAuthenticated() && (request.auth.uid == userId || isStaff());
+      allow list: if isStaff();
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+    }
+
+    match /socios/{socioId} {
+      allow read: if isAuthenticated();
+      allow create: if true; // Allow registration
+      allow update: if isStaff() || (isAuthenticated() && resource.data.uid == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    match /ventas/{ventaId} {
+      allow read: if isStaff();
+      allow create: if isStaff();
+      allow update, delete: if isAdmin();
+    }
+
+    match /asistencias/{asistenciaId} {
+      allow read: if isStaff();
+      allow create: if true; // Public check-in
+      allow update, delete: if isAdmin();
+    }
+
+    match /rutinas/{rutinaId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isTrainer();
+      allow delete: if isAdmin();
+    }
+
+    match /plantillas_rutinas/{plantillaId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isTrainer();
+      allow delete: if isAdmin();
+    }
+
+    match /ejercicios/{ejercicioId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isTrainer();
+      allow delete: if isAdmin();
+    }
+
+    match /solicitudes_rutina/{solicitudId} {
+      allow read: if isTrainer();
+      allow create: if isAuthenticated();
+      allow update: if isTrainer();
+      allow delete: if isAdmin();
+    }
+
+    match /cierres_gym/{cierreId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /sucursales/{sucursalId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /inventario/{itemId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated();
+      allow create: if isStaff();
+      allow update, delete: if isAdmin();
+    }
+  }
+}

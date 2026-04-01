@@ -1,0 +1,5 @@
+{
+  "name": "Gariba Gym Admin",
+  "description": "Dashboard administrativo para gestión de socios de Gariba Gym con autenticación y base de datos en tiempo real.",
+  "requestFramePermissions": []
+}
