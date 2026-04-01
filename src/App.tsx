@@ -4,8 +4,8 @@
  */
 
 import { useEffect, useState } from 'react';
-import { onAuthStateChanged, User, signInAnonymously } from 'firebase/auth';
-import { auth } from './firebase';
+import { supabase } from './lib/supabase';
+import { User } from '@supabase/supabase-js';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import SocioApp from './components/SocioApp';
@@ -20,24 +20,23 @@ export default function App() {
   const [isSimulating, setIsSimulating] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
+    // Check active sessions and subscribe to auth changes
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
       setLoading(false);
     });
-    return () => unsubscribe();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const handleStartSimulation = async () => {
     setAppMode('socio');
     setIsSimulating(true);
-    // Sign in anonymously if not already authenticated to allow database access in socio mode
-    if (!user) {
-      try {
-        await signInAnonymously(auth);
-      } catch (error) {
-        console.error("Error signing in anonymously:", error);
-      }
-    }
   };
 
   const handleStopSimulation = () => {

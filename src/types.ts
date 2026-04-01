@@ -1,26 +1,24 @@
-import { Timestamp } from 'firebase/firestore';
-
 export interface Socio {
   id: string;
   nombre: string;
   email?: string;
   telefono?: string;
-  fechaInicio?: Timestamp;
-  fechaVencimiento: Timestamp;
+  fecha_inicio?: string;
+  fecha_vencimiento: string;
   estado: 'Activa' | 'Vencida' | 'Baneado';
-  uid?: string;
-  sucursalId?: string;
-  mustChangePassword?: boolean;
+  user_id?: string;
+  sucursal_id?: string;
+  must_change_password?: boolean;
   password?: string;
-  acceptedTerms?: boolean;
+  accepted_terms?: boolean;
 }
 
 export interface UserProfile {
-  uid: string;
+  id: string;
   email: string;
   role: 'owner' | 'manager' | 'receptionist' | 'trainer';
-  sucursalId?: string;
-  acceptedTerms?: boolean;
+  sucursal_id?: string;
+  accepted_terms?: boolean;
 }
 
 export interface Ejercicio {

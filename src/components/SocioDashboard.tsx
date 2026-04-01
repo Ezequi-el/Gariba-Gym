@@ -40,22 +40,7 @@ import { EXERCISE_CATALOG, ROUTINE_TEMPLATES, getTemplateIcon } from '../constan
 import { TERMS_AND_CONDITIONS, PRIVACY_POLICY } from '../constants/legal';
 import { motion, AnimatePresence } from 'motion/react';
 import { QRCodeSVG } from 'qrcode.react';
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  Timestamp,
-  getDocs,
-  orderBy,
-  addDoc,
-  serverTimestamp,
-  doc,
-  setDoc,
-  deleteDoc,
-  updateDoc
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { 
   differenceInDays, 
   isAfter, 
@@ -68,7 +53,8 @@ import {
   endOfWeek,
   isToday,
   addMonths,
-  subMonths
+  subMonths,
+  parseISO
 } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { cn } from '../lib/utils';
@@ -76,7 +62,7 @@ import { toast } from 'sonner';
 
 interface Asistencia {
   id: string;
-  fecha: Timestamp;
+  fecha: string;
 }
 
 interface Exercise {
@@ -96,23 +82,28 @@ interface DiaRutina {
 
 interface Routine {
   id: string;
-  socioId: string;
+  socio_id: string;
   dias: DiaRutina[];
-  fechaCreacion: Timestamp;
+  created_at: string;
 }
 
 interface CierreGym {
   id: string;
-  fecha: Timestamp;
+  fecha: string;
   motivo: string;
 }
 
 interface Venta {
   id: string;
   total: number;
-  fecha: Timestamp;
-  metodoPago: string;
-  items: { nombre: string; cantidad: number; precio: number }[];
+  fecha: string;
+  metodo_pago: string;
+  venta_items: { 
+    id: string;
+    cantidad: number;
+    precio_unitario: number;
+    inventario: { nombre: string }
+  }[];
 }
 
 interface Product {
@@ -142,25 +133,32 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
   const [legalTab, setLegalTab] = useState<'terms' | 'privacy'>('terms');
 
   useEffect(() => {
-    if (socio.mustChangePassword) {
+    if (socio.must_change_password) {
       setShowPasswordModal(true);
     }
-  }, [socio.mustChangePassword]);
+  }, [socio.must_change_password]);
 
   useEffect(() => {
-    if (socio.acceptedTerms === false) {
+    if (socio.accepted_terms === false) {
       setShowLegalModal(true);
     }
-  }, [socio.acceptedTerms]);
+  }, [socio.accepted_terms]);
 
   const handleAcceptTerms = async () => {
     try {
-      await updateDoc(doc(db, 'socios', socio.id), {
-        acceptedTerms: true
-      });
+      const { error } = await supabase
+        .from('socios')
+        .update({
+          accepted_terms: true
+        })
+        .eq('id', socio.id);
+
+      if (error) throw error;
+
       setShowLegalModal(false);
       toast.success('Has aceptado los términos y condiciones');
     } catch (error) {
+      console.error("Error accepting terms:", error);
       toast.error('Error al aceptar los términos');
     }
   };
@@ -177,17 +175,22 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
 
     setIsChangingPassword(true);
     try {
-      const socioRef = doc(db, 'socios', socio.id);
-      await updateDoc(socioRef, {
-        password: newPassword,
-        mustChangePassword: false
-      });
+      const { error } = await supabase
+        .from('socios')
+        .update({
+          password: newPassword,
+          must_change_password: false
+        })
+        .eq('id', socio.id);
+
+      if (error) throw error;
+
       toast.success("Contraseña actualizada correctamente");
       setShowPasswordModal(false);
       setNewPassword('');
       setConfirmPassword('');
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.UPDATE, 'socios');
+      console.error("Error updating password:", err);
       toast.error("Error al actualizar la contraseña");
     } finally {
       setIsChangingPassword(false);
@@ -201,19 +204,24 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
 
   const handleRequestRoutine = async () => {
     try {
-      await addDoc(collection(db, 'solicitudes_rutina'), {
-        socioId: socio.id,
-        nombreSocio: socio.nombre,
-        emailSocio: socio.email,
-        fechaSolicitud: serverTimestamp(),
-        estado: 'Pendiente',
-        mensaje: 'El socio ha solicitado una rutina desde la app.',
-        sucursalId: socio.sucursalId
-      });
+      const { error } = await supabase
+        .from('solicitudes_rutina')
+        .insert({
+          socio_id: socio.id,
+          nombre_socio: socio.nombre,
+          email_socio: socio.email,
+          fecha_solicitud: new Date().toISOString(),
+          estado: 'Pendiente',
+          mensaje: 'El socio ha solicitado una rutina desde la app.',
+          sucursal_id: socio.sucursal_id
+        });
+
+      if (error) throw error;
+
       toast.success("Solicitud enviada correctamente");
       setRoutineAction('none');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'solicitudes_rutina');
+    } catch (error: any) {
+      console.error("Error requesting routine:", error);
       toast.error("Error al enviar la solicitud");
     }
   };
@@ -222,38 +230,51 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
     if (!editingRoutine) return;
     try {
       const { id, ...data } = editingRoutine;
-      await setDoc(doc(db, 'rutinas', id), {
-        ...data,
-        fechaActualizacion: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('rutinas')
+        .update({
+          ...data,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id);
+
+      if (error) throw error;
+
       toast.success("Rutina actualizada correctamente");
       setEditingRoutine(null);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `rutinas/${editingRoutine.id}`);
+    } catch (error: any) {
+      console.error("Error updating routine:", error);
+      toast.error("Error al actualizar la rutina");
     }
   };
 
   const handleCreateManualRoutine = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await addDoc(collection(db, 'rutinas'), {
-        socioId: socio.id,
-        nombreSocio: socio.nombre,
-        dias: [
-          { 
-            nombre: 'Día 1', 
-            ejercicios: [
-              { ejercicioId: 'manual', nombre: 'Press de Banca', series: '3', repeticiones: '12', descanso: '60s', observaciones: '', videoUrl: '' }
-            ] 
-          }
-        ],
-        fechaCreacion: serverTimestamp(),
-        sucursalId: socio.sucursalId
-      });
+      const { error } = await supabase
+        .from('rutinas')
+        .insert({
+          socio_id: socio.id,
+          nombre_socio: socio.nombre,
+          dias: [
+            { 
+              nombre: 'Día 1', 
+              ejercicios: [
+                { ejercicioId: 'manual', nombre: 'Press de Banca', series: '3', repeticiones: '12', descanso: '60s', observaciones: '', videoUrl: '' }
+              ] 
+            }
+          ],
+          created_at: new Date().toISOString(),
+          sucursal_id: socio.sucursal_id
+        });
+
+      if (error) throw error;
+
       toast.success("Rutina creada. ¡A entrenar!");
       setRoutineAction('none');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'rutinas');
+    } catch (error: any) {
+      console.error("Error creating manual routine:", error);
+      toast.error("Error al crear la rutina");
     }
   };
 
@@ -300,17 +321,23 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
         ];
       }
 
-      await addDoc(collection(db, 'rutinas'), {
-        socioId: socio.id,
-        nombreSocio: socio.nombre,
-        dias,
-        fechaCreacion: serverTimestamp(),
-        sucursalId: socio.sucursalId
-      });
+      const { error } = await supabase
+        .from('rutinas')
+        .insert({
+          socio_id: socio.id,
+          nombre_socio: socio.nombre,
+          dias,
+          created_at: new Date().toISOString(),
+          sucursal_id: socio.sucursal_id
+        });
+
+      if (error) throw error;
+
       toast.success(`Rutina de ${template?.name} aplicada.`);
       setRoutineAction('none');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'rutinas');
+    } catch (error: any) {
+      console.error("Error applying template:", error);
+      toast.error("Error al aplicar la plantilla");
     }
   };
   const [asistenciasMes, setAsistenciasMes] = useState<Asistencia[]>([]);
@@ -336,8 +363,8 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
     
     // Check if any routine has a day with this name
     const dayRoutines = rutinas.filter(r => (r.dias || []).some(d => (d?.nombre || '').toLowerCase().includes((dayName || '').toLowerCase())));
-    const isClosed = cierres.find(c => c.fecha && isSameDay(c.fecha.toDate(), day));
-    const trained = asistenciasMes.find(a => a.fecha && isSameDay(a.fecha.toDate(), day));
+    const isClosed = cierres.find(c => c.fecha && isSameDay(parseISO(c.fecha), day));
+    const trained = asistenciasMes.find(a => a.fecha && isSameDay(parseISO(a.fecha), day));
     
     return { 
       hasRoutine: dayRoutines.length > 0, 
@@ -370,103 +397,95 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
     const start = startOfMonth(now);
     const end = endOfMonth(now);
 
-    // Asistencias
-    const qAsistencias = query(
-      collection(db, 'asistencias'),
-      where('socioId', '==', socio.id),
-      where('fecha', '>=', Timestamp.fromDate(start)),
-      where('fecha', '<=', Timestamp.fromDate(end))
-    );
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        // Asistencias
+        const { data: asistenciasData } = await supabase
+          .from('asistencias')
+          .select('*')
+          .eq('socio_id', socio.id)
+          .gte('fecha', start.toISOString())
+          .lte('fecha', end.toISOString());
+        
+        if (asistenciasData) setAsistenciasMes(asistenciasData);
 
-    const unsubscribeAsistencias = onSnapshot(qAsistencias, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Asistencia[];
-      setAsistenciasMes(data);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'asistencias');
-    });
+        // Rutinas
+        const { data: rutinasData } = await supabase
+          .from('rutinas')
+          .select('*')
+          .eq('socio_id', socio.id);
+        
+        if (rutinasData) setRutinas(rutinasData);
 
-    // Rutinas
-    const qRutinas = query(
-      collection(db, 'rutinas'),
-      where('socioId', '==', socio.id)
-    );
+        // Cierres Gym
+        const { data: cierresData } = await supabase
+          .from('cierres_gym')
+          .select('*')
+          .order('fecha', { ascending: true });
+        
+        if (cierresData) setCierres(cierresData);
 
-    const unsubscribeRutinas = onSnapshot(qRutinas, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Routine[];
-      setRutinas(data);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'rutinas');
-    });
+        // Ventas
+        const { data: ventasData } = await supabase
+          .from('ventas')
+          .select(`
+            *,
+            venta_items (
+              *,
+              inventario (nombre)
+            )
+          `)
+          .eq('socio_id', socio.id)
+          .order('fecha', { ascending: false });
+        
+        if (ventasData) setVentas(ventasData as any);
 
-    // Cierres Gym (Global or by sucursal)
-    const qCierres = query(
-      collection(db, 'cierres_gym'),
-      orderBy('fecha', 'asc')
-    );
+        // Productos
+        const { data: productosData } = await supabase
+          .from('inventario')
+          .select('*')
+          .eq('tipo', 'producto')
+          .order('nombre', { ascending: true });
+        
+        if (productosData) setProductos(productosData as any);
 
-    const unsubscribeCierres = onSnapshot(qCierres, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as CierreGym[];
-      setCierres(data);
-      setLoading(false);
-    }, (error) => {
-      setLoading(false);
-      handleFirestoreError(error, OperationType.GET, 'cierres_gym');
-    });
+      } catch (err) {
+        console.error("Error fetching socio data:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-    // Ventas del socio
-    const qVentas = query(
-      collection(db, 'ventas'),
-      where('socioId', '==', socio.id),
-      orderBy('fecha', 'desc')
-    );
+    fetchData();
 
-    const unsubscribeVentas = onSnapshot(qVentas, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Venta[];
-      setVentas(data);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'ventas');
-    });
+    // Real-time subscriptions
+    const asistenciasChannel = supabase.channel('socio-asistencias')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'asistencias', filter: `socio_id=eq.${socio.id}` }, fetchData)
+      .subscribe();
 
-    // Productos disponibles
-    const qProductos = query(
-      collection(db, 'inventario'),
-      where('tipo', '==', 'producto'),
-      orderBy('nombre', 'asc')
-    );
+    const rutinasChannel = supabase.channel('socio-rutinas')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rutinas', filter: `socio_id=eq.${socio.id}` }, fetchData)
+      .subscribe();
 
-    const unsubscribeProductos = onSnapshot(qProductos, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Product[];
-      setProductos(data);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'inventario');
-    });
+    const cierresChannel = supabase.channel('gym-cierres')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cierres_gym' }, fetchData)
+      .subscribe();
+
+    const ventasChannel = supabase.channel('socio-ventas')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ventas', filter: `socio_id=eq.${socio.id}` }, fetchData)
+      .subscribe();
 
     return () => {
-      unsubscribeAsistencias();
-      unsubscribeRutinas();
-      unsubscribeCierres();
-      unsubscribeVentas();
-      unsubscribeProductos();
+      supabase.removeChannel(asistenciasChannel);
+      supabase.removeChannel(rutinasChannel);
+      supabase.removeChannel(cierresChannel);
+      supabase.removeChannel(ventasChannel);
     };
   }, [socio.id]);
 
-  const daysLeft = socio.fechaVencimiento ? differenceInDays(socio.fechaVencimiento.toDate(), new Date()) : 0;
-  const isExpired = socio.fechaVencimiento ? !isAfter(socio.fechaVencimiento.toDate(), new Date()) : true;
+  const daysLeft = socio.fecha_vencimiento ? differenceInDays(parseISO(socio.fecha_vencimiento), new Date()) : 0;
+  const isExpired = socio.fecha_vencimiento ? !isAfter(parseISO(socio.fecha_vencimiento), new Date()) : true;
   const isBanned = socio.estado === 'Baneado';
   const progress = Math.min((asistenciasMes.length / 20) * 100, 100);
   const daysTrained = asistenciasMes.length;
@@ -476,7 +495,7 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
     const dayName = format(today, 'EEEE', { locale: es });
     
     const dayRoutines = rutinas.filter(r => (r.dias || []).some(d => (d?.nombre || '').toLowerCase().includes((dayName || '').toLowerCase())));
-    const isClosed = cierres.find(c => c.fecha && isSameDay(c.fecha.toDate(), today));
+    const isClosed = cierres.find(c => c.fecha && isSameDay(parseISO(c.fecha), today));
     
     return { hasRoutine: dayRoutines.length > 0, isClosed };
   }, [rutinas, cierres]);
@@ -537,7 +556,7 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
               )}>
                 {isBanned ? 'Baneado' : isExpired ? 'Vencida' : `${daysLeft} Días`}
               </h3>
-              <p className="text-[10px] opacity-60 mt-1">Vence el {socio.fechaVencimiento ? format(socio.fechaVencimiento.toDate(), 'dd MMM, yyyy', { locale: es }) : 'N/A'}</p>
+              <p className="text-[10px] opacity-60 mt-1">Vence el {socio.fecha_vencimiento ? format(parseISO(socio.fecha_vencimiento), 'dd MMM, yyyy', { locale: es }) : 'N/A'}</p>
             </div>
             <div className={cn(
               "w-12 h-12 rounded-2xl flex items-center justify-center border",

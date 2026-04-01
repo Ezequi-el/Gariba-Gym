@@ -1,5 +1,4 @@
-import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { auth } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { motion } from 'motion/react';
 import { LogIn, Dumbbell, ArrowRight } from 'lucide-react';
 import { useState } from 'react';
@@ -8,9 +7,14 @@ export default function Login({ onSwitchToSocio }: { onSwitchToSocio: () => void
   const [error, setError] = useState<string | null>(null);
 
   const handleLogin = async () => {
-    const provider = new GoogleAuthProvider();
     try {
-      await signInWithPopup(auth, provider);
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
     } catch (err: any) {
       setError(err.message);
       console.error("Login error:", err);

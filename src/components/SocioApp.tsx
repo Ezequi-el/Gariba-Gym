@@ -1,15 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  collection, 
-  query, 
-  where, 
-  getDocs, 
-  limit,
-  addDoc,
-  Timestamp,
-  serverTimestamp
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
 import SocioDashboard from './SocioDashboard';
 import { motion, AnimatePresence } from 'motion/react';
 import { Dumbbell, ArrowRight, Mail, AlertCircle, Zap, Lock, UserPlus, Phone, User as UserIcon, ChevronLeft } from 'lucide-react';
@@ -19,11 +9,9 @@ interface Socio {
   id: string;
   nombre: string;
   email: string;
-  fechaVencimiento: any;
+  fecha_vencimiento: string;
   estado: 'Activa' | 'Vencida' | 'Baneado';
-  password?: string;
-  mustChangePassword?: boolean;
-  acceptedTerms?: boolean;
+  user_id?: string;
 }
 
 type AuthView = 'login' | 'register';
@@ -45,37 +33,45 @@ export default function SocioApp() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   useEffect(() => {
-    const savedSocioId = localStorage.getItem('gariba_socio_id');
-    if (savedSocioId) {
-      fetchSocioById(savedSocioId);
-    } else {
-      setLoading(false);
-    }
+    checkUser();
   }, []);
 
-  const fetchSocioById = async (id: string) => {
+  const checkUser = async () => {
     try {
-      const q = query(collection(db, 'socios'), where('__name__', '==', id));
-      const snapshot = await getDocs(q);
-      if (!snapshot.empty) {
-        const data = snapshot.docs[0].data();
-        const socioData = { id: snapshot.docs[0].id, ...data } as Socio;
-        
-        if (socioData.estado === 'Baneado') {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        await fetchSocioByUserId(session.user.id);
+      } else {
+        setLoading(false);
+      }
+    } catch (err) {
+      console.error("Error checking user:", err);
+      setLoading(false);
+    }
+  };
+
+  const fetchSocioByUserId = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('socios')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+      if (error) throw error;
+
+      if (data) {
+        if (data.estado === 'Baneado') {
           setError('Tu cuenta ha sido suspendida.');
-          localStorage.removeItem('gariba_socio_id');
+          await supabase.auth.signOut();
           setSocio(null);
         } else {
-          setSocio(socioData);
+          setSocio(data as Socio);
         }
-      } else {
-        localStorage.removeItem('gariba_socio_id');
       }
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.GET, 'socios');
-      if (err.code === 'permission-denied') {
-        setError('Error de permisos al acceder a tu perfil. Contacta a recepción.');
-      }
+      console.error("Error fetching socio:", err);
+      setError('Error al acceder a tu perfil.');
     } finally {
       setLoading(false);
     }
@@ -89,35 +85,18 @@ export default function SocioApp() {
     setError(null);
 
     try {
-      const q = query(
-        collection(db, 'socios'), 
-        where('email', '==', email.toLowerCase().trim())
-      );
-      const snapshot = await getDocs(q);
+      const { data, error: authError } = await supabase.auth.signInWithPassword({
+        email: email.toLowerCase().trim(),
+        password: password,
+      });
 
-      if (!snapshot.empty) {
-        const docData = snapshot.docs[0].data();
-        const socioData = { id: snapshot.docs[0].id, ...docData } as Socio;
+      if (authError) throw authError;
 
-        if (socioData.estado === 'Baneado') {
-          setError('Tu cuenta ha sido suspendida. Por favor, acude a recepción para más información.');
-          setIsLoggingIn(false);
-          return;
-        }
-
-        // Check password (simple check for now, should be hashed in production)
-        if (socioData.password === password) {
-          setSocio(socioData);
-          localStorage.setItem('gariba_socio_id', socioData.id);
-        } else {
-          setError('Contraseña incorrecta. Inténtalo de nuevo.');
-        }
-      } else {
-        setError('No encontramos ningún socio con ese correo. Verifica tus datos o contacta a recepción.');
+      if (data.user) {
+        await fetchSocioByUserId(data.user.id);
       }
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.GET, 'socios');
-      setError('Ocurrió un error al intentar iniciar sesión. Inténtalo de nuevo.');
+      setError(err.message || 'Error al iniciar sesión.');
     } finally {
       setIsLoggingIn(false);
     }
@@ -133,38 +112,38 @@ export default function SocioApp() {
     try {
       const normalizedEmail = regEmail.toLowerCase().trim();
       
-      // Check if email exists
-      const q = query(collection(db, 'socios'), where('email', '==', normalizedEmail), limit(1));
-      const snapshot = await getDocs(q);
-      
-      if (!snapshot.empty) {
-        setError('Ya existe un socio registrado con este correo electrónico.');
-        setIsLoggingIn(false);
-        return;
-      }
-
-      // Create new socio (default expired/inactive until payment)
-      const newSocio = {
-        nombre: regNombre,
+      // 1. Sign up in Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
         email: normalizedEmail,
-        telefono: regTelefono,
         password: regPassword,
-        estado: 'Vencida', // Start as expired until they pay at reception
-        fechaInicio: serverTimestamp(),
-        fechaVencimiento: serverTimestamp(), // Expired
-        createdAt: serverTimestamp(),
-        mustChangePassword: false
-      };
+      });
 
-      const docRef = await addDoc(collection(db, 'socios'), newSocio);
-      
-      toast.success("¡Registro exitoso! Ahora puedes iniciar sesión.");
-      setAuthView('login');
-      setEmail(regEmail);
-      setPassword(regPassword);
+      if (authError) throw authError;
+
+      if (authData.user) {
+        // 2. Create record in socios table
+        const { error: dbError } = await supabase
+          .from('socios')
+          .insert({
+            user_id: authData.user.id,
+            nombre: regNombre,
+            email: normalizedEmail,
+            telefono: regTelefono,
+            estado: 'Vencida',
+            fecha_inicio: new Date().toISOString(),
+            fecha_vencimiento: new Date().toISOString(),
+            sucursal_id: '00000000-0000-0000-0000-000000000000' // Default or placeholder
+          });
+
+        if (dbError) throw dbError;
+
+        toast.success("¡Registro exitoso! Por favor verifica tu correo si es necesario.");
+        setAuthView('login');
+        setEmail(regEmail);
+        setPassword(regPassword);
+      }
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.CREATE, 'socios');
-      setError('Error al registrarse. Inténtalo de nuevo.');
+      setError(err.message || 'Error al registrarse.');
     } finally {
       setIsLoggingIn(false);
     }
@@ -174,28 +153,26 @@ export default function SocioApp() {
     setIsLoggingIn(true);
     setError(null);
     try {
-      const q = query(collection(db, 'socios'), limit(5));
-      const snapshot = await getDocs(q);
-      if (!snapshot.empty) {
-        const demoDoc = snapshot.docs.find(d => d.data().email) || snapshot.docs[0];
-        const data = demoDoc.data();
-        const socioData = { id: demoDoc.id, ...data } as Socio;
-        setSocio(socioData);
-        localStorage.setItem('gariba_socio_id', socioData.id);
-      } else {
-        setError('No hay socios registrados en la base de datos para probar.');
+      const { data, error } = await supabase
+        .from('socios')
+        .select('*')
+        .limit(1)
+        .single();
+
+      if (error) throw error;
+      if (data) {
+        setSocio(data as Socio);
       }
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.GET, 'socios');
       setError('Error al cargar socio de prueba.');
     } finally {
       setIsLoggingIn(false);
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     setSocio(null);
-    localStorage.removeItem('gariba_socio_id');
   };
 
   if (loading) {

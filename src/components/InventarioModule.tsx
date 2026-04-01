@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, Timestamp, query, orderBy } from 'firebase/firestore';
-import { db, auth, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Package, 
@@ -23,8 +22,8 @@ interface InventarioItem {
   precio: number;
   tipo: 'producto' | 'servicio';
   categoria?: string;
-  duracionDias?: number;
-  fechaCreacion: Timestamp;
+  duracion_dias?: number;
+  created_at: string;
 }
 
 export default function InventarioModule({ canManage = true }: { canManage?: boolean }) {
@@ -40,23 +39,35 @@ export default function InventarioModule({ canManage = true }: { canManage?: boo
     precio: '',
     tipo: 'producto' as 'producto' | 'servicio',
     categoria: '',
-    duracionDias: '30'
+    duracion_dias: '30'
   });
 
   useEffect(() => {
-    const q = query(collection(db, 'inventario'), orderBy('fechaCreacion', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as InventarioItem[];
-      setItems(data);
+    const fetchItems = async () => {
+      const { data, error } = await supabase
+        .from('inventario')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (error) {
+        console.error("Error fetching inventory:", error);
+        toast.error("Error al cargar el inventario");
+      } else {
+        setItems(data as InventarioItem[]);
+      }
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'inventario');
-      setLoading(false);
-    });
-    return () => unsubscribe();
+    };
+
+    fetchItems();
+
+    const channel = supabase
+      .channel('inventario-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventario' }, fetchItems)
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -71,39 +82,46 @@ export default function InventarioModule({ canManage = true }: { canManage?: boo
         nombre: formData.nombre,
         precio: Number(formData.precio),
         tipo: formData.tipo,
-        categoria: formData.categoria || (formData.tipo === 'servicio' ? 'Membresía' : 'General'),
-        fechaCreacion: Timestamp.now()
+        categoria: formData.categoria || (formData.tipo === 'servicio' ? 'Membresía' : 'General')
       };
 
       if (formData.tipo === 'servicio') {
-        itemData.duracionDias = Number(formData.duracionDias);
+        itemData.duracion_dias = Number(formData.duracion_dias);
       }
 
       if (editingItem) {
-        await updateDoc(doc(db, 'inventario', editingItem.id), itemData);
+        const { error } = await supabase
+          .from('inventario')
+          .update(itemData)
+          .eq('id', editingItem.id);
+        if (error) throw error;
         toast.success("Ítem actualizado correctamente");
       } else {
-        await addDoc(collection(db, 'inventario'), itemData);
+        const { error } = await supabase
+          .from('inventario')
+          .insert(itemData);
+        if (error) throw error;
         toast.success("Ítem agregado al inventario");
       }
 
       setIsModalOpen(false);
       setEditingItem(null);
-      setFormData({ nombre: '', precio: '', tipo: activeTab, categoria: '', duracionDias: '30' });
-    } catch (error) {
-      handleFirestoreError(error, editingItem ? OperationType.UPDATE : OperationType.CREATE, editingItem ? `inventario/${editingItem.id}` : 'inventario');
-      toast.error("Error al guardar el ítem");
+      setFormData({ nombre: '', precio: '', tipo: activeTab, categoria: '', duracion_dias: '30' });
+    } catch (error: any) {
+      console.error("Error saving inventory item:", error);
+      toast.error("Error al guardar el ítem: " + (error.message || "Error desconocido"));
     }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm("¿Estás seguro de eliminar este ítem?")) return;
     try {
-      await deleteDoc(doc(db, 'inventario', id));
+      const { error } = await supabase.from('inventario').delete().eq('id', id);
+      if (error) throw error;
       toast.success("Ítem eliminado");
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `inventario/${id}`);
-      toast.error("Error al eliminar");
+    } catch (error: any) {
+      console.error("Error deleting item:", error);
+      toast.error("Error al eliminar: " + (error.message || "Error desconocido"));
     }
   };
 
@@ -213,7 +231,7 @@ export default function InventarioModule({ canManage = true }: { canManage?: boo
                     <td className="px-6 py-4">
                       <span className="font-medium text-gray-200">{item.nombre}</span>
                       {item.tipo === 'servicio' && (
-                        <span className="text-[10px] text-gray-500 block">Duración: {item.duracionDias} días</span>
+                        <span className="text-[10px] text-gray-500 block">Duración: {item.duracion_dias} días</span>
                       )}
                     </td>
                     <td className="px-6 py-4">
@@ -235,7 +253,7 @@ export default function InventarioModule({ canManage = true }: { canManage?: boo
                                 precio: item.precio.toString(),
                                 tipo: item.tipo,
                                 categoria: item.categoria || '',
-                                duracionDias: (item.duracionDias || 30).toString()
+                                duracion_dias: (item.duracion_dias || 30).toString()
                               });
                               setIsModalOpen(true);
                             }}
@@ -366,8 +384,8 @@ export default function InventarioModule({ canManage = true }: { canManage?: boo
                         required
                         type="number"
                         placeholder="Ej. 30"
-                        value={formData.duracionDias}
-                        onChange={e => setFormData({...formData, duracionDias: e.target.value})}
+                        value={formData.duracion_dias}
+                        onChange={e => setFormData({...formData, duracion_dias: e.target.value})}
                         className="w-full bg-black border border-white/10 rounded-2xl py-4 px-5 focus:outline-none focus:border-orange-500 transition-all text-white font-mono"
                       />
                     </div>

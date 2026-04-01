@@ -1,16 +1,6 @@
 import React, { useState } from 'react';
-import { 
-  doc, 
-  updateDoc, 
-  Timestamp, 
-  collection, 
-  query, 
-  where, 
-  getDocs, 
-  limit 
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
-import { motion, AnimatePresence } from 'motion/react';
+import { supabase } from '../lib/supabase';
+import { motion } from 'motion/react';
 import { Socio, Sucursal } from '../types';
 import { X, CheckCircle2, User, Mail, Phone, Building2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -26,7 +16,7 @@ export default function EditSocioModal({ socio, sucursales, onClose }: EditSocio
     nombre: socio.nombre,
     email: socio.email || '',
     telefono: socio.telefono || '',
-    sucursalId: socio.sucursalId || sucursales[0]?.id || ''
+    sucursal_id: socio.sucursal_id || sucursales[0]?.id || ''
   });
   const [isSaving, setIsSaving] = useState(false);
 
@@ -43,13 +33,14 @@ export default function EditSocioModal({ socio, sucursales, onClose }: EditSocio
       
       // Check if email already exists for ANOTHER socio
       if (normalizedEmail) {
-        const q = query(
-          collection(db, 'socios'), 
-          where('email', '==', normalizedEmail),
-          limit(5) // Get a few to check IDs
-        );
-        const snapshot = await getDocs(q);
-        const otherSocio = snapshot.docs.find(d => d.id !== socio.id);
+        const { data: otherSocio, error: checkError } = await supabase
+          .from('socios')
+          .select('id')
+          .eq('email', normalizedEmail)
+          .neq('id', socio.id)
+          .maybeSingle();
+
+        if (checkError) throw checkError;
         
         if (otherSocio) {
           toast.error('Ya existe otro socio con este correo electrónico.');
@@ -58,16 +49,21 @@ export default function EditSocioModal({ socio, sucursales, onClose }: EditSocio
         }
       }
 
-      const socioRef = doc(db, 'socios', socio.id);
-      await updateDoc(socioRef, {
-        ...formData,
-        email: formData.email.toLowerCase().trim()
-      });
+      const { error: updateError } = await supabase
+        .from('socios')
+        .update({
+          ...formData,
+          email: normalizedEmail
+        })
+        .eq('id', socio.id);
+
+      if (updateError) throw updateError;
+
       toast.success('Datos actualizados correctamente');
       onClose();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `socios/${socio.id}`);
-      toast.error('Error al actualizar los datos');
+    } catch (error: any) {
+      console.error("Error updating socio:", error);
+      toast.error('Error al actualizar los datos: ' + (error.message || "Error desconocido"));
     } finally {
       setIsSaving(false);
     }
@@ -142,8 +138,8 @@ export default function EditSocioModal({ socio, sucursales, onClose }: EditSocio
               <div className="relative">
                 <Building2 className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-600" />
                 <select
-                  value={formData.sucursalId}
-                  onChange={e => setFormData({...formData, sucursalId: e.target.value})}
+                  value={formData.sucursal_id}
+                  onChange={e => setFormData({...formData, sucursal_id: e.target.value})}
                   className="w-full bg-black border border-white/10 rounded-2xl py-4 pl-12 pr-5 focus:outline-none focus:border-orange-500 transition-all text-white appearance-none"
                 >
                   {sucursales.map(s => (

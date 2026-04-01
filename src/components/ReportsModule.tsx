@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, getDocs, Timestamp, orderBy, limit } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -27,7 +26,7 @@ import {
   AreaChart,
   Area
 } from 'recharts';
-import { startOfMonth, endOfMonth, subMonths, format, differenceInDays, isWithinInterval } from 'date-fns';
+import { startOfMonth, endOfMonth, subMonths, format, differenceInDays, isWithinInterval, parseISO } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { cn } from '../lib/utils';
 
@@ -56,32 +55,25 @@ export default function ReportsModule({ sucursalId }: ReportsModuleProps) {
       const lastMonth = subMonths(now, 1);
 
       // Fetch Socios for MRR and Churn
-      const sociosRef = collection(db, 'socios');
-      const sociosSnap = await getDocs(query(sociosRef, where('sucursalId', '==', sucursalId)));
-      const sociosData = sociosSnap.docs.map(doc => doc.data());
+      const { data: sociosData, error: sociosError } = await supabase
+        .from('socios')
+        .select('*')
+        .eq('sucursal_id', sucursalId);
 
-      // MRR Calculation (Approximate based on active memberships)
-      // We assume a standard monthly price if not specified, but ideally we'd have the actual price paid.
-      // For now, let's use a fixed average or look at recent sales.
-      // Better: Fetch 'inventario' to get prices of services.
-      const inventarioRef = collection(db, 'inventario');
-      const inventarioSnap = await getDocs(inventarioRef);
-      const inventario = inventarioSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
+      if (sociosError) throw sociosError;
+
       let totalMrr = 0;
       let activeCount = 0;
       let expiredLastMonth = 0;
 
       sociosData.forEach((socio: any) => {
-        const vencimiento = socio.fechaVencimiento.toDate();
+        const vencimiento = socio.fecha_vencimiento ? parseISO(socio.fecha_vencimiento) : null;
         if (socio.estado === 'Activa') {
           activeCount++;
-          // Find the service price (this is an approximation)
-          // Ideally we'd store the last paid price on the socio document.
           totalMrr += 500; // Default fallback price
         }
         
-        if (vencimiento >= lastMonth && vencimiento <= now && socio.estado === 'Vencida') {
+        if (vencimiento && vencimiento >= lastMonth && vencimiento <= now && socio.estado === 'Vencida') {
           expiredLastMonth++;
         }
       });
@@ -89,39 +81,51 @@ export default function ReportsModule({ sucursalId }: ReportsModuleProps) {
       setMrr(totalMrr);
       setActiveSociosCount(activeCount);
       
-      // Churn Rate = (Expired last month) / (Active + Expired last month)
       const churn = activeCount + expiredLastMonth > 0 
         ? (expiredLastMonth / (activeCount + expiredLastMonth)) * 100 
         : 0;
       setChurnRate(churn);
 
       // Fetch Sales for Best Sellers and History
-      const ventasRef = collection(db, 'ventas');
-      const ventasSnap = await getDocs(query(ventasRef, where('sucursalId', '==', sucursalId)));
-      const ventasData = ventasSnap.docs
-        .map(doc => doc.data())
-        .sort((a: any, b: any) => b.fecha.toDate().getTime() - a.fecha.toDate().getTime())
-        .slice(0, 500);
+      const { data: ventasData, error: ventasError } = await supabase
+        .from('ventas')
+        .select(`
+          id,
+          total,
+          fecha,
+          socios (nombre),
+          venta_items (
+            cantidad,
+            inventario (nombre)
+          )
+        `)
+        .eq('sucursal_id', sucursalId)
+        .order('fecha', { ascending: false })
+        .limit(500);
+
+      if (ventasError) throw ventasError;
 
       const productSales: {[key: string]: number} = {};
       const customerSales: {[key: string]: {name: string, total: number}} = {};
       const history: {[key: string]: number} = {};
 
       ventasData.forEach((venta: any) => {
-        const date = format(venta.fecha.toDate(), 'dd/MM');
+        const date = format(parseISO(venta.fecha), 'dd/MM');
         history[date] = (history[date] || 0) + (venta.total || 0);
 
         // Track customer sales
-        if (venta.socioId && venta.socioNombre) {
-          if (!customerSales[venta.socioId]) {
-            customerSales[venta.socioId] = { name: venta.socioNombre, total: 0 };
+        if (venta.socios?.nombre) {
+          const socioName = venta.socios.nombre;
+          if (!customerSales[socioName]) {
+            customerSales[socioName] = { name: socioName, total: 0 };
           }
-          customerSales[venta.socioId].total += (venta.total || 0);
+          customerSales[socioName].total += (venta.total || 0);
         }
 
-        if (venta.items) {
-          venta.items.forEach((item: any) => {
-            productSales[item.nombre] = (productSales[item.nombre] || 0) + (item.cantidad || 1);
+        if (venta.venta_items) {
+          venta.venta_items.forEach((item: any) => {
+            const productName = item.inventario?.nombre || 'Desconocido';
+            productSales[productName] = (productSales[productName] || 0) + (item.cantidad || 1);
           });
         }
       });
@@ -145,8 +149,9 @@ export default function ReportsModule({ sucursalId }: ReportsModuleProps) {
         .reverse();
       setSalesHistory(historyData);
 
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, null);
+    } catch (error: any) {
+      console.error("Error fetching report data:", error);
+      toast.error("Error al generar reportes: " + (error.message || "Error desconocido"));
     } finally {
       setLoading(false);
     }

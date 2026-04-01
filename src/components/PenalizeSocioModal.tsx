@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { doc, updateDoc, Timestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { motion } from 'motion/react';
 import { Socio } from '../types';
 import { 
@@ -9,10 +8,9 @@ import {
   MinusCircle, 
   Ban, 
   CheckCircle2,
-  Calendar,
   ShieldAlert
 } from 'lucide-react';
-import { format, subDays, addDays } from 'date-fns';
+import { format, subDays, parseISO } from 'date-fns';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 
@@ -30,18 +28,23 @@ export default function PenalizeSocioModal({ socio, onClose }: PenalizeSocioModa
     if (daysToSubtract <= 0) return;
     setLoading(true);
     try {
-      const currentVencimiento = socio.fechaVencimiento.toDate();
+      const currentVencimiento = socio.fecha_vencimiento ? parseISO(socio.fecha_vencimiento) : new Date();
       const newVencimiento = subDays(currentVencimiento, daysToSubtract);
       
-      await updateDoc(doc(db, 'socios', socio.id), {
-        fechaVencimiento: Timestamp.fromDate(newVencimiento)
-      });
+      const { error } = await supabase
+        .from('socios')
+        .update({
+          fecha_vencimiento: newVencimiento.toISOString()
+        })
+        .eq('id', socio.id);
+
+      if (error) throw error;
       
       toast.success(`Se han restado ${daysToSubtract} días a la membresía de ${socio.nombre}`);
       onClose();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `socios/${socio.id}`);
-      toast.error("Error al restar días");
+    } catch (error: any) {
+      console.error("Error subtracting days:", error);
+      toast.error("Error al restar días: " + (error.message || "Error desconocido"));
     } finally {
       setLoading(false);
     }
@@ -51,15 +54,20 @@ export default function PenalizeSocioModal({ socio, onClose }: PenalizeSocioModa
     setLoading(true);
     try {
       const newEstado = socio.estado === 'Baneado' ? 'Activa' : 'Baneado';
-      await updateDoc(doc(db, 'socios', socio.id), {
-        estado: newEstado
-      });
+      const { error } = await supabase
+        .from('socios')
+        .update({
+          estado: newEstado
+        })
+        .eq('id', socio.id);
+
+      if (error) throw error;
       
       toast.success(newEstado === 'Baneado' ? `${socio.nombre} ha sido baneado` : `${socio.nombre} ha sido reactivado`);
       onClose();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `socios/${socio.id}`);
-      toast.error("Error al cambiar estado de baneo");
+    } catch (error: any) {
+      console.error("Error toggling ban:", error);
+      toast.error("Error al cambiar estado de baneo: " + (error.message || "Error desconocido"));
     } finally {
       setLoading(false);
     }
@@ -122,7 +130,7 @@ export default function PenalizeSocioModal({ socio, onClose }: PenalizeSocioModa
               <AlertTriangle className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
               <p className="text-xs text-orange-200/60 leading-relaxed">
                 Esta acción restará días a la fecha de vencimiento actual. 
-                Vencimiento actual: <span className="text-white font-bold">{format(socio.fechaVencimiento.toDate(), 'dd/MM/yyyy')}</span>
+                Vencimiento actual: <span className="text-white font-bold">{socio.fecha_vencimiento ? format(parseISO(socio.fecha_vencimiento), 'dd/MM/yyyy') : 'N/A'}</span>
               </p>
             </div>
 

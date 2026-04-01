@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
-import { doc, updateDoc, Timestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
-import { motion, AnimatePresence } from 'motion/react';
+import { supabase } from '../lib/supabase';
+import { motion } from 'motion/react';
 import { Socio } from '../types';
 import { X, CheckCircle2, Calendar, Clock, Zap } from 'lucide-react';
-import { addMonths, addYears, isAfter } from 'date-fns';
+import { addMonths, addYears, isAfter, parseISO } from 'date-fns';
 import { toast } from 'sonner';
 
 interface RenewMembershipModalProps {
@@ -19,7 +18,7 @@ export default function RenewMembershipModal({ socio, onClose }: RenewMembership
   const handleRenew = async () => {
     setIsSaving(true);
     try {
-      const currentExpiry = socio.fechaVencimiento.toDate();
+      const currentExpiry = socio.fecha_vencimiento ? parseISO(socio.fecha_vencimiento) : new Date();
       const baseDate = isAfter(currentExpiry, new Date()) ? currentExpiry : new Date();
       
       let newExpiry: Date;
@@ -27,17 +26,21 @@ export default function RenewMembershipModal({ socio, onClose }: RenewMembership
       else if (selectedPlan === '3months') newExpiry = addMonths(baseDate, 3);
       else newExpiry = addYears(baseDate, 1);
 
-      const socioRef = doc(db, 'socios', socio.id);
-      await updateDoc(socioRef, {
-        fechaVencimiento: Timestamp.fromDate(newExpiry),
-        estado: 'Activa'
-      });
+      const { error } = await supabase
+        .from('socios')
+        .update({
+          fecha_vencimiento: newExpiry.toISOString(),
+          estado: 'Activa'
+        })
+        .eq('id', socio.id);
+
+      if (error) throw error;
       
       toast.success(`Membresía renovada para ${socio.nombre}`);
       onClose();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `socios/${socio.id}`);
-      toast.error('Error al renovar la membresía');
+    } catch (error: any) {
+      console.error("Error renewing membership:", error);
+      toast.error('Error al renovar la membresía: ' + (error.message || "Error desconocido"));
     } finally {
       setIsSaving(false);
     }

@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { collection, query, where, getDocs, addDoc, Timestamp, limit } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   UserCheck, 
@@ -34,70 +33,51 @@ export default function CheckIn({ sucursalId }: { sucursalId: string }) {
     setStatus('loading');
     try {
       const searchInput = input.trim();
-      const sociosRef = collection(db, 'socios');
       
       // 1. First, check if this email/name is BANNED in ANY sucursal (Global Ban)
-      const qGlobalEmail = query(sociosRef, where('email', '==', searchInput.toLowerCase()));
-      const globalEmailSnap = await getDocs(qGlobalEmail);
+      const { data: globalBans, error: globalError } = await supabase
+        .from('socios')
+        .select('nombre, estado')
+        .or(`email.eq.${searchInput.toLowerCase()},nombre.eq.${searchInput}`)
+        .eq('estado', 'Baneado');
       
-      let globalBanned = globalEmailSnap.docs.find(d => d.data().estado === 'Baneado');
-      
-      if (!globalBanned) {
-        const qGlobalName = query(sociosRef, where('nombre', '==', searchInput));
-        const globalNameSnap = await getDocs(qGlobalName);
-        globalBanned = globalNameSnap.docs.find(d => d.data().estado === 'Baneado');
-      }
-
-      if (globalBanned) {
-        setSocioName(globalBanned.data().nombre);
+      if (globalBans && globalBans.length > 0) {
+        setSocioName(globalBans[0].nombre);
         setStatus('denied');
         return;
       }
 
       // 2. If not globally banned, check for active membership in CURRENT sucursal
-      const qEmail = query(
-        sociosRef, 
-        where('sucursalId', '==', sucursalId),
-        where('email', '==', searchInput.toLowerCase())
-      );
-      let snapshot = await getDocs(qEmail);
+      const { data: localSocios, error: localError } = await supabase
+        .from('socios')
+        .select('id, nombre, estado')
+        .eq('sucursal_id', sucursalId)
+        .or(`email.eq.${searchInput.toLowerCase()},nombre.eq.${searchInput}`);
 
-      if (snapshot.empty) {
-        const qNombre = query(
-          sociosRef, 
-          where('sucursalId', '==', sucursalId),
-          where('nombre', '==', searchInput)
-        );
-        snapshot = await getDocs(qNombre);
-      }
-
-      if (snapshot.empty) {
+      if (!localSocios || localSocios.length === 0) {
         setStatus('denied');
       } else {
-        const activeSocio = snapshot.docs.find(d => d.data().estado === 'Activa');
+        const activeSocio = localSocios.find(d => d.estado === 'Activa');
         
         if (activeSocio) {
-          const socioData = activeSocio.data();
-          setSocioName(socioData.nombre);
+          setSocioName(activeSocio.nombre);
           
           // Record attendance for the branch
-          await addDoc(collection(db, 'asistencias'), {
-            socioId: activeSocio.id,
-            nombre: socioData.nombre,
-            fecha: Timestamp.now(),
-            sucursalId
+          await supabase.from('asistencias').insert({
+            socio_id: activeSocio.id,
+            nombre: activeSocio.nombre,
+            fecha: new Date().toISOString(),
+            sucursal_id: sucursalId
           });
           
           setStatus('success');
         } else {
-          // If found but not active (and we already checked for bans)
-          const firstSocio = snapshot.docs[0].data();
-          setSocioName(firstSocio.nombre);
+          setSocioName(localSocios[0].nombre);
           setStatus('denied');
         }
       }
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'asistencias');
+      console.error("Error in check-in:", error);
       setStatus('denied');
     }
 

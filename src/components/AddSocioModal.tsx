@@ -1,26 +1,17 @@
 import React, { useState } from 'react';
-import { User } from 'firebase/auth';
-import { 
-  collection, 
-  addDoc, 
-  Timestamp, 
-  query, 
-  where, 
-  getDocs, 
-  limit 
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { motion } from 'motion/react';
-import { X, UserPlus, Calendar, Mail, CheckCircle2, Phone, Lock as LockIcon } from 'lucide-react';
-import { addMonths, addYears, format } from 'date-fns';
+import { X, UserPlus, Mail, CheckCircle2, Phone, Lock as LockIcon } from 'lucide-react';
+import { format } from 'date-fns';
+import { toast } from 'sonner';
 
 interface AddSocioModalProps {
   onClose: () => void;
-  user: User;
+  userId: string;
   sucursalId: string;
 }
 
-export default function AddSocioModal({ onClose, user, sucursalId }: AddSocioModalProps) {
+export default function AddSocioModal({ onClose, userId, sucursalId }: AddSocioModalProps) {
   const [nombre, setNombre] = useState('');
   const [email, setEmail] = useState('');
   const [telefono, setTelefono] = useState('');
@@ -37,40 +28,48 @@ export default function AddSocioModal({ onClose, user, sucursalId }: AddSocioMod
       const normalizedEmail = email.toLowerCase().trim();
       
       // Check if email already exists
-      const q = query(collection(db, 'socios'), where('email', '==', normalizedEmail), limit(1));
-      const snapshot = await getDocs(q);
-      if (!snapshot.empty) {
-        alert("Ya existe un socio registrado con este correo electrónico.");
+      const { data: existingSocio, error: checkError } = await supabase
+        .from('socios')
+        .select('id')
+        .eq('email', normalizedEmail)
+        .maybeSingle();
+
+      if (checkError) throw checkError;
+      
+      if (existingSocio) {
+        toast.error("Ya existe un socio registrado con este correo electrónico.");
         setLoading(false);
         return;
       }
 
       const fechaInicio = new Date();
-      // Default to 1 day expiration if no plan is selected, or just set to today
-      // Usually, they will pay later to activate.
       const fechaVencimiento = fechaInicio; 
 
-      await addDoc(collection(db, 'socios'), {
-        nombre,
-        email: normalizedEmail,
-        telefono,
-        password,
-        mustChangePassword: true,
-        fechaInicio: Timestamp.fromDate(fechaInicio),
-        fechaVencimiento: Timestamp.fromDate(fechaVencimiento),
-        estado: 'Vencida', // Start as expired until they pay
-        uid: user.uid,
-        sucursalId,
-        createdAt: Timestamp.now()
-      });
+      const { error: insertError } = await supabase
+        .from('socios')
+        .insert({
+          nombre,
+          email: normalizedEmail,
+          telefono,
+          password_plain: password,
+          must_change_password: true,
+          fecha_inicio: fechaInicio.toISOString(),
+          fecha_vencimiento: fechaVencimiento.toISOString(),
+          estado: 'Vencida',
+          user_id: userId,
+          sucursal_id: sucursalId
+        });
+
+      if (insertError) throw insertError;
 
       setSuccess(true);
+      toast.success("Socio agregado correctamente");
       setTimeout(() => {
         onClose();
       }, 1500);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'socios');
-      alert("Error al agregar socio. Revisa la consola.");
+    } catch (error: any) {
+      console.error("Error adding socio:", error);
+      toast.error("Error al agregar socio: " + (error.message || "Error desconocido"));
     } finally {
       setLoading(false);
     }

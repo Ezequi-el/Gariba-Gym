@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { User } from 'firebase/auth';
-import { collection, addDoc, Timestamp, onSnapshot, query, orderBy, where, doc, updateDoc, getDoc } from 'firebase/firestore';
-import { db, auth, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
+import { User } from '@supabase/supabase-js';
 import { motion, AnimatePresence } from 'motion/react';
 import { Socio } from '../types';
 import { 
@@ -22,7 +21,7 @@ import {
 } from 'lucide-react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import { cn } from '../lib/utils';
-import { addDays, isAfter } from 'date-fns';
+import { addDays, isAfter, parseISO } from 'date-fns';
 import { toast } from 'sonner';
 
 interface Product {
@@ -31,7 +30,7 @@ interface Product {
   precio: number;
   tipo: 'producto' | 'servicio';
   categoria?: string;
-  duracionDias?: number;
+  duracion_dias?: number;
 }
 
 interface CartItem extends Product {
@@ -75,29 +74,24 @@ export default function POS({
         try {
           const data = JSON.parse(decodedText);
           if (data.type === 'sale') {
-            // Es una venta pre-armada desde la app socio
             setCart(data.items.map((item: any) => ({
               ...item,
               tipo: item.tipo || 'producto'
             })));
             
-            // Buscar al socio
             const socio = socios.find(s => s.id === data.socioId);
             if (socio) {
               setLocalSelectedSocio(socio);
             } else {
-              // Si no lo encontramos en la lista actual (tal vez por sucursal), 
-              // al menos tenemos su nombre e ID del QR
               setLocalSelectedSocio({
                 id: data.socioId,
                 nombre: data.socioNombre,
-                fechaVencimiento: Timestamp.now(), // Placeholder
+                fecha_vencimiento: new Date().toISOString(),
                 estado: 'Activa'
-              });
+              } as Socio);
             }
             toast.success("Venta cargada desde QR");
           } else if (data.type === 'socio') {
-            // Es solo el ID del socio
             const socio = socios.find(s => s.id === data.socioId);
             if (socio) {
               setLocalSelectedSocio(socio);
@@ -107,20 +101,15 @@ export default function POS({
           scanner.clear();
           setShowScanner(false);
         } catch (e) {
-          // Si no es JSON, tal vez sea solo el ID del socio (escaneo directo de credencial)
           const socio = socios.find(s => s.id === decodedText || s.id.slice(-8).toUpperCase() === decodedText.toUpperCase());
           if (socio) {
             setLocalSelectedSocio(socio);
             toast.success(`Cliente ${socio.nombre} asociado`);
             scanner.clear();
             setShowScanner(false);
-          } else {
-            console.error("QR no reconocido:", decodedText);
           }
         }
-      }, (error) => {
-        // console.warn(error);
-      });
+      }, (error) => {});
 
       return () => {
         scanner.clear().catch(error => console.error("Failed to clear scanner", error));
@@ -133,37 +122,49 @@ export default function POS({
   }, [selectedSocio]);
 
   useEffect(() => {
-    const q = query(collection(db, 'inventario'), orderBy('nombre', 'asc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Product[];
-      setInventory(data);
+    const fetchInventory = async () => {
+      const { data, error } = await supabase
+        .from('inventario')
+        .select('*')
+        .order('nombre', { ascending: true });
+      
+      if (data) {
+        setInventory(data as Product[]);
+      }
       setFetchingInventory(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'inventario');
-      setFetchingInventory(false);
-    });
-    return () => unsubscribe();
+    };
+    fetchInventory();
+
+    const channel = supabase.channel('inventory-pos')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventario' }, fetchInventory)
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   useEffect(() => {
     if (!sucursalId) return;
-    const q = query(
-      collection(db, 'socios'),
-      where('sucursalId', '==', sucursalId)
-    );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Socio[];
-      setSocios(data.sort((a, b) => a.nombre.localeCompare(b.nombre)));
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'socios');
-    });
-    return () => unsubscribe();
+    const fetchSocios = async () => {
+      const { data, error } = await supabase
+        .from('socios')
+        .select('*')
+        .eq('sucursal_id', sucursalId);
+      
+      if (data) {
+        setSocios((data as Socio[]).sort((a, b) => a.nombre.localeCompare(b.nombre)));
+      }
+    };
+    fetchSocios();
+
+    const channel = supabase.channel('socios-pos')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'socios', filter: `sucursal_id=eq.${sucursalId}` }, fetchSocios)
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [sucursalId]);
 
   const addToCart = (product: Product) => {
@@ -199,48 +200,65 @@ export default function POS({
     setLoading(true);
     try {
       const socioToUse = localSelectedSocio;
+      
       // 1. Registrar la venta
-      await addDoc(collection(db, 'ventas'), {
-        items: cart.map(item => ({
-          id: item.id,
-          nombre: item.nombre,
-          precio: item.precio,
-          cantidad: item.cantidad,
-          tipo: item.tipo
-        })),
-        total,
-        metodoPago,
-        fecha: Timestamp.now(),
-        uid: user.uid,
-        sucursalId,
-        socioId: socioToUse?.id || null,
-        socioNombre: socioToUse?.nombre || null
-      });
+      const { data: ventaData, error: ventaError } = await supabase
+        .from('ventas')
+        .insert({
+          total,
+          metodo_pago: metodoPago,
+          fecha: new Date().toISOString(),
+          sucursal_id: sucursalId,
+          socio_id: socioToUse?.id || null
+        })
+        .select()
+        .single();
 
-      // 2. Si hay un socio seleccionado, procesar renovaciones de servicios
+      if (ventaError) throw ventaError;
+
+      // 2. Registrar items de venta
+      const ventaItems = cart.map(item => ({
+        venta_id: ventaData.id,
+        producto_id: item.id,
+        cantidad: item.cantidad,
+        precio_unitario: item.precio
+      }));
+
+      const { error: itemsError } = await supabase
+        .from('venta_items')
+        .insert(ventaItems);
+
+      if (itemsError) throw itemsError;
+
+      // 3. Si hay un socio seleccionado, procesar renovaciones de servicios
       if (socioToUse) {
         const servicios = cart.filter(item => item.tipo === 'servicio');
         if (servicios.length > 0) {
           let totalDiasAAgregar = 0;
           servicios.forEach(s => {
-            totalDiasAAgregar += (s.duracionDias || 30) * s.cantidad;
+            totalDiasAAgregar += (s.duracion_dias || 30) * s.cantidad;
           });
 
-          const socioRef = doc(db, 'socios', socioToUse.id);
-          const socioSnap = await getDoc(socioRef);
+          const { data: socioData, error: socioFetchError } = await supabase
+            .from('socios')
+            .select('fecha_vencimiento')
+            .eq('id', socioToUse.id)
+            .single();
           
-          if (socioSnap.exists()) {
-            const currentVencimiento = socioSnap.data().fechaVencimiento.toDate();
+          if (socioData) {
+            const currentVencimiento = new Date(socioData.fecha_vencimiento);
             const now = new Date();
             
-            // Si ya venció, empezamos desde hoy. Si no, sumamos a la fecha actual.
             const baseDate = isAfter(currentVencimiento, now) ? currentVencimiento : now;
             const newVencimiento = addDays(baseDate, totalDiasAAgregar);
 
-            await updateDoc(socioRef, {
-              fechaVencimiento: Timestamp.fromDate(newVencimiento),
-              estado: 'Activa'
-            });
+            await supabase
+              .from('socios')
+              .update({
+                fecha_vencimiento: newVencimiento.toISOString(),
+                estado: 'Activa'
+              })
+              .eq('id', socioToUse.id);
             
             toast.success(`Membresía de ${socioToUse.nombre} renovada hasta el ${newVencimiento.toLocaleDateString()}`);
           }
@@ -252,9 +270,9 @@ export default function POS({
       setLocalSelectedSocio(null);
       if (onClearSocio) onClearSocio();
       setTimeout(() => setShowSuccess(false), 2000);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'ventas');
-      toast.error("Error al procesar la venta");
+    } catch (error: any) {
+      console.error("Error in checkout:", error);
+      toast.error("Error al procesar la venta: " + error.message);
     } finally {
       setLoading(false);
     }
@@ -300,8 +318,8 @@ export default function POS({
                 <h3 className="text-sm md:text-base font-bold text-gray-200 mb-1 md:mb-2 leading-tight">{product.nombre}</h3>
                 <div className="flex items-center justify-between">
                   <p className="text-orange-500 font-mono font-bold text-sm md:text-base">${product.precio}</p>
-                  {product.duracionDias && (
-                    <span className="text-[10px] text-gray-600 font-mono">{product.duracionDias}d</span>
+                  {product.duracion_dias && (
+                    <span className="text-[10px] text-gray-600 font-mono">{product.duracion_dias}d</span>
                   )}
                 </div>
               </motion.button>

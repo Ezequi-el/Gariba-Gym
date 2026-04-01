@@ -19,18 +19,7 @@ import {
   X,
   Edit3
 } from 'lucide-react';
-import { 
-  collection, 
-  addDoc, 
-  query, 
-  onSnapshot, 
-  Timestamp, 
-  deleteDoc, 
-  doc, 
-  orderBy,
-  where
-} from 'firebase/firestore';
-import { db, auth, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { motion, AnimatePresence } from 'motion/react';
 import { Ejercicio, PlantillaRutina } from '../types';
 import { toast } from 'sonner';
@@ -57,23 +46,23 @@ interface DiaRutina {
 
 interface Routine {
   id: string;
-  socioId: string;
-  nombreSocio: string;
+  socio_id: string;
+  nombre_socio: string;
   dias: DiaRutina[];
-  fechaCreacion: Timestamp;
-  uid: string;
-  sucursalId: string;
+  fecha_creacion: string;
+  user_id: string;
+  sucursal_id: string;
 }
 
 interface RoutineRequest {
   id: string;
-  socioId: string;
-  nombreSocio: string;
-  emailSocio: string;
-  fechaSolicitud: Timestamp;
+  socio_id: string;
+  nombre_socio: string;
+  email_socio: string;
+  fecha_solicitud: string;
   estado: 'Pendiente' | 'Atendida';
   mensaje: string;
-  sucursalId: string;
+  sucursal_id: string;
 }
 
 interface Socio {
@@ -121,132 +110,178 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
     }
 
     try {
-      await addDoc(collection(db, 'plantillas_rutinas'), {
-        name: `Plantilla - ${(socios || []).find(s => s.id === selectedSocio)?.nombre || 'Nueva'}`,
-        description: `Creada desde el módulo de rutinas`,
-        icon: 'Dumbbell',
-        dias: routineDays,
-        fechaCreacion: Timestamp.now(),
-        sucursalId
-      });
+      const { data: plantillaData, error: plantillaError } = await supabase
+        .from('plantillas_rutinas')
+        .insert({
+          nombre: `Plantilla - ${socios.find(s => s.id === selectedSocio)?.nombre || 'Nueva'}`,
+          descripcion: `Creada desde el módulo de rutinas`,
+          sucursal_id: sucursalId
+        })
+        .select()
+        .single();
+
+      if (plantillaError) throw plantillaError;
+
+      for (let i = 0; i < routineDays.length; i++) {
+        const dia = routineDays[i];
+        const { data: diaData, error: diaError } = await supabase
+          .from('plantilla_dias')
+          .insert({
+            plantilla_id: plantillaData.id,
+            nombre: dia.nombre,
+            orden: i,
+            notas: dia.notas
+          })
+          .select()
+          .single();
+        
+        if (diaError) throw diaError;
+
+        const ejercicios = dia.ejercicios.map((ex, exIdx) => ({
+          dia_id: diaData.id,
+          ejercicio_id: ex.ejercicioId === 'manual' ? null : ex.ejercicioId,
+          nombre_manual: ex.ejercicioId === 'manual' ? ex.nombre : null,
+          series: ex.series,
+          repeticiones: ex.repeticiones,
+          descanso: ex.descanso,
+          observaciones: ex.observaciones,
+          rpe: ex.rpe,
+          tempo: ex.tempo,
+          tipo: ex.tipo,
+          orden: exIdx
+        }));
+
+        const { error: exError } = await supabase
+          .from('plantilla_ejercicios')
+          .insert(ejercicios);
+        
+        if (exError) throw exError;
+      }
+
       toast.success("Rutina guardada como plantilla");
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'plantillas_rutinas');
-      toast.error("Error al guardar la plantilla");
+    } catch (error: any) {
+      console.error("Error saving template:", error);
+      toast.error("Error al guardar la plantilla: " + error.message);
+    }
+  };
+
+        const { error: exError } = await supabase
+          .from('plantilla_ejercicios')
+          .insert(ejercicios);
+        
+        if (exError) throw exError;
+      }
+
+      toast.success("Rutina guardada como plantilla");
+    } catch (error: any) {
+      console.error("Error saving template:", error);
+      toast.error("Error al guardar la plantilla: " + error.message);
     }
   };
 
   useEffect(() => {
-    const unsubEjercicios = onSnapshot(collection(db, 'ejercicios'), (snapshot) => {
-      setCatalogEjercicios(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Ejercicio)));
-    });
-    const unsubPlantillas = onSnapshot(collection(db, 'plantillas_rutinas'), (snapshot) => {
-      setCatalogPlantillas(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PlantillaRutina)));
-    });
-    const qSocios = query(
-      collection(db, 'socios'), 
-      where('sucursalId', '==', sucursalId)
-    );
-    const unsubscribeSocios = onSnapshot(qSocios, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        nombre: doc.data().nombre
-      })) as Socio[];
-      setSocios(data);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'socios');
-    });
+    const fetchData = async () => {
+      // Fetch Ejercicios
+      const { data: exData } = await supabase.from('ejercicios').select('*').order('nombre');
+      if (exData) setCatalogEjercicios(exData as Ejercicio[]);
 
-    const qRutinas = query(collection(db, 'rutinas'));
-    const unsubscribeRutinas = onSnapshot(qRutinas, (snapshot) => {
-      const allRutinas = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Routine[];
+      // Fetch Plantillas (Simplified for now, just names)
+      const { data: plData } = await supabase.from('plantillas_rutinas').select('*').eq('sucursal_id', sucursalId);
+      if (plData) setCatalogPlantillas(plData as any);
+
+      // Fetch Socios
+      const { data: soData } = await supabase.from('socios').select('id, nombre').eq('sucursal_id', sucursalId);
+      if (soData) setSocios(soData as Socio[]);
+
+      // Fetch Rutinas
+      const { data: ruData } = await supabase
+        .from('rutinas_asignadas')
+        .select('*, socios(nombre)')
+        .eq('sucursal_id', sucursalId)
+        .order('fecha_creacion', { ascending: false });
       
-      // Filter by branch, including legacy data in the first branch if needed
-      // But for simplicity and correctness, we'll just filter by sucursalId
-      // and maybe show all if sucursalId is not provided (though it is)
-      const filtered = allRutinas.filter(r => {
-        if (!r.sucursalId) return true; // Show legacy routines to all for now, or assign to first branch
-        return r.sucursalId === sucursalId;
-      });
+      if (ruData) {
+        setRutinas(ruData.map(r => ({
+          id: r.id,
+          socio_id: r.socio_id,
+          nombre_socio: r.socios?.nombre || 'Desconocido',
+          fecha_creacion: r.fecha_creacion,
+          user_id: r.user_id,
+          sucursal_id: r.sucursal_id,
+          dias: []
+        })) as any);
+      }
 
-      // Sort in memory
-      filtered.sort((a, b) => {
-        const dateA = a.fechaCreacion?.toMillis() || 0;
-        const dateB = b.fechaCreacion?.toMillis() || 0;
-        return dateB - dateA;
-      });
+      // Fetch Solicitudes
+      const { data: solData } = await supabase
+        .from('solicitudes_rutina')
+        .select('*')
+        .eq('sucursal_id', sucursalId)
+        .order('fecha_solicitud', { ascending: false });
+      if (solData) setSolicitudes(solData as any);
 
-      setRutinas(filtered);
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'rutinas');
-      setLoading(false);
-    });
+    };
 
-    const qSolicitudes = query(collection(db, 'solicitudes_rutina'));
-    const unsubscribeSolicitudes = onSnapshot(qSolicitudes, (snapshot) => {
-      const allSolicitudes = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as RoutineRequest[];
+    fetchData();
 
-      const filtered = allSolicitudes.filter(s => {
-        if (!s.sucursalId) return true;
-        return s.sucursalId === sucursalId;
-      });
-
-      // Sort
-      filtered.sort((a, b) => {
-        const dateA = a.fechaSolicitud?.toMillis() || 0;
-        const dateB = b.fechaSolicitud?.toMillis() || 0;
-        return dateB - dateA;
-      });
-
-      setSolicitudes(filtered);
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'solicitudes_rutina');
-      setLoading(false);
-    });
+    // Real-time subscriptions
+    const channels = [
+      supabase.channel('ejercicios-rutinas').on('postgres_changes', { event: '*', schema: 'public', table: 'ejercicios' }, fetchData).subscribe(),
+      supabase.channel('plantillas-rutinas').on('postgres_changes', { event: '*', schema: 'public', table: 'plantillas_rutinas' }, fetchData).subscribe(),
+      supabase.channel('socios-rutinas').on('postgres_changes', { event: '*', schema: 'public', table: 'socios' }, fetchData).subscribe(),
+      supabase.channel('rutinas-rutinas').on('postgres_changes', { event: '*', schema: 'public', table: 'rutinas_asignadas' }, fetchData).subscribe(),
+      supabase.channel('solicitudes-rutinas').on('postgres_changes', { event: '*', schema: 'public', table: 'solicitudes_rutina' }, fetchData).subscribe(),
+    ];
 
     return () => {
-      unsubscribeSocios();
-      unsubscribeRutinas();
-      unsubscribeSolicitudes();
-      unsubEjercicios();
-      unsubPlantillas();
+      channels.forEach(ch => supabase.removeChannel(ch));
     };
   }, [sucursalId]);
 
   const handleAtenderSolicitud = async (solicitud: RoutineRequest) => {
-    setSelectedSocio(solicitud.socioId);
+    setSelectedSocio(solicitud.socio_id);
     setShowForm(true);
     setActiveTab('rutinas');
-    // Optionally update status to 'Atendida' after saving
   };
 
   const handleDeleteSolicitud = async (id: string) => {
     if (!confirm("¿Eliminar solicitud?")) return;
     try {
-      await deleteDoc(doc(db, 'solicitudes_rutina', id));
+      await supabase.from('solicitudes_rutina').delete().eq('id', id);
       toast.success("Solicitud eliminada");
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `solicitudes_rutina/${id}`);
+      console.error("Error deleting request:", error);
+      toast.error("Error al eliminar la solicitud");
     }
   };
 
-  const handleApplyTemplate = (template: PlantillaRutina) => {
-    setRoutineDays((template.dias || []).map(dia => ({
-      nombre: dia.nombre || '',
-      ejercicios: (dia.ejercicios || []).map(ex => ({
-        ...ex,
-        videoUrl: (catalogEjercicios || []).find(ce => ce.id === ex.ejercicioId)?.videoUrl || ''
-      }))
-    })));
-    toast.success(`Plantilla "${template.name}" aplicada`);
+  const handleApplyTemplate = async (template: PlantillaRutina) => {
+    const { data: diasData, error: diasError } = await supabase
+      .from('plantilla_dias')
+      .select('*, plantilla_ejercicios(*, ejercicios(*))')
+      .eq('plantilla_id', template.id)
+      .order('orden');
+    
+    if (diasData) {
+      setRoutineDays(diasData.map(dia => ({
+        nombre: dia.nombre,
+        notas: dia.notas,
+        ejercicios: dia.plantilla_ejercicios.map((ex: any) => ({
+          ejercicioId: ex.ejercicio_id || 'manual',
+          nombre: ex.ejercicio_id ? ex.ejercicios?.nombre : ex.nombre_manual,
+          series: ex.series,
+          repeticiones: ex.repeticiones,
+          descanso: ex.descanso,
+          observaciones: ex.observaciones,
+          rpe: ex.rpe,
+          tempo: ex.tempo,
+          tipo: ex.tipo,
+          videoUrl: ex.ejercicios?.video_url || ''
+        }))
+      })));
+      toast.success(`Plantilla "${template.name}" aplicada`);
+    }
   };
 
   const handleSave = async () => {
@@ -263,28 +298,66 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
 
     setIsSaving(true);
     try {
-      const socio = (socios || []).find(s => s.id === selectedSocio);
-      const routineData = {
-        socioId: selectedSocio,
-        nombreSocio: socio?.nombre || 'Desconocido',
-        dias: routineDays,
-        fechaCreacion: Timestamp.now(),
-        uid: auth.currentUser?.uid,
-        sucursalId
-      };
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("No user found");
 
-      await addDoc(collection(db, 'rutinas'), routineData);
+      const { data: routineData, error: routineError } = await supabase
+        .from('rutinas_asignadas')
+        .insert({
+          socio_id: selectedSocio,
+          sucursal_id: sucursalId,
+          user_id: user.id,
+          fecha_creacion: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (routineError) throw routineError;
+
+      for (let i = 0; i < routineDays.length; i++) {
+        const dia = routineDays[i];
+        const { data: diaData, error: diaError } = await supabase
+          .from('rutina_dias')
+          .insert({
+            rutina_id: routineData.id,
+            nombre: dia.nombre,
+            orden: i,
+            notas: dia.notas
+          })
+          .select()
+          .single();
+        
+        if (diaError) throw diaError;
+
+        const ejercicios = dia.ejercicios.map((ex, exIdx) => ({
+          dia_id: diaData.id,
+          ejercicio_id: ex.ejercicioId === 'manual' ? null : ex.ejercicioId,
+          nombre_manual: ex.ejercicioId === 'manual' ? ex.nombre : null,
+          series: ex.series,
+          repeticiones: ex.repeticiones,
+          descanso: ex.descanso,
+          observaciones: ex.observaciones,
+          rpe: ex.rpe,
+          tempo: ex.tempo,
+          tipo: ex.tipo,
+          orden: exIdx
+        }));
+
+        const { error: exError } = await supabase
+          .from('rutina_ejercicios')
+          .insert(ejercicios);
+        
+        if (exError) throw exError;
+      }
       
       toast.success('Rutina guardada correctamente');
       
-      // Reset form
       setSelectedSocio('');
       setRoutineDays([{ nombre: 'Día 1', ejercicios: [] }]);
       setShowForm(false);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'rutinas');
+    } catch (error: any) {
       console.error("Error saving routine:", error);
-      toast.error('Error al guardar la rutina');
+      toast.error('Error al guardar la rutina: ' + error.message);
     } finally {
       setIsSaving(false);
     }
@@ -292,9 +365,8 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
 
   const handleLoadTemplate = (template: PlantillaRutina) => {
     if (window.confirm('¿Cargar esta plantilla? Se perderán los cambios actuales.')) {
-      setRoutineDays(template.dias || []);
+      handleApplyTemplate(template);
       setShowTemplateCatalog(false);
-      toast.success(`Plantilla "${template.name}" cargada`);
     }
   };
 
@@ -307,21 +379,23 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
     setRoutineDays([...routineDays, newDay]);
     toast.success('Día copiado');
   };
+
   const handleDelete = async (id: string) => {
     if (window.confirm('¿Estás seguro de eliminar esta rutina?')) {
       try {
-        await deleteDoc(doc(db, 'rutinas', id));
+        await supabase.from('rutinas_asignadas').delete().eq('id', id);
         toast.success('Rutina eliminada');
       } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `rutinas/${id}`);
+        console.error("Error deleting routine:", error);
         toast.error('Error al eliminar la rutina');
       }
     }
   };
 
   const filteredRutinas = rutinas.filter(r => 
-    (r.nombreSocio?.toLowerCase() || '').includes(searchTerm.toLowerCase()) ||
-    (r.dias || []).some(d => (d.nombre || '').toLowerCase().includes(searchTerm.toLowerCase()))
+    (r.nombre_socio?.toLowerCase() || '').includes(searchTerm.toLowerCase())
+  );
+rCase()))
   );
 
   return (
@@ -752,7 +826,7 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
                 >
                   <div className="flex justify-between items-start mb-4">
                     <div>
-                      <h4 className="font-bold text-lg leading-tight">{rutina.nombreSocio}</h4>
+                      <h4 className="font-bold text-lg leading-tight">{rutina.nombre_socio}</h4>
                       <div className="flex flex-wrap gap-1 mt-1">
                         {(rutina.dias || []).map((dia, dIdx) => (
                           <span key={dIdx} className="text-[10px] font-black uppercase tracking-widest bg-lime-500/10 text-lime-500 px-2 py-0.5 rounded-md border border-lime-500/20">
@@ -795,7 +869,7 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
                   <div className="mt-6 pt-6 border-t border-white/5 flex items-center justify-between">
                     <div className="flex items-center gap-2 text-[10px] text-gray-500">
                       <Clock className="w-3 h-3" />
-                      {rutina.fechaCreacion?.toDate().toLocaleDateString() || 'Fecha desconocida'}
+                      {rutina.fecha_creacion ? new Date(rutina.fecha_creacion).toLocaleDateString() : 'Fecha desconocida'}
                     </div>
                     {(rutina.dias || []).some(d => (d.ejercicios || []).some(e => e.videoUrl)) && (
                       <div className="flex items-center gap-1 text-[10px] text-lime-500 font-bold">
@@ -829,8 +903,8 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
                 >
                   <div className="flex justify-between items-start">
                     <div>
-                      <h4 className="font-bold text-white">{solicitud.nombreSocio}</h4>
-                      <p className="text-xs text-gray-500">{solicitud.emailSocio}</p>
+                      <h4 className="font-bold text-white">{solicitud.nombre_socio}</h4>
+                      <p className="text-xs text-gray-500">{solicitud.email_socio}</p>
                     </div>
                     <span className={cn(
                       "text-[10px] font-bold uppercase px-2 py-1 rounded-md",
@@ -842,8 +916,8 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
                   <p className="text-xs text-gray-400 bg-white/5 p-3 rounded-xl italic">"{solicitud.mensaje}"</p>
                   <div className="flex items-center justify-between pt-4 border-t border-white/5">
                     <span className="text-[10px] text-gray-600">
-                      {solicitud.fechaSolicitud && typeof solicitud.fechaSolicitud.toDate === 'function' 
-                        ? solicitud.fechaSolicitud.toDate().toLocaleString() 
+                      {solicitud.fecha_solicitud 
+                        ? new Date(solicitud.fecha_solicitud).toLocaleString() 
                         : 'Fecha desconocida'}
                     </span>
                     <div className="flex gap-2">
@@ -910,7 +984,7 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
                           <FileText className="w-5 h-5" />
                         </div>
                         <div>
-                          <h4 className="font-bold text-white text-sm">{template.name}</h4>
+                          <h4 className="font-bold text-white text-sm">{template.nombre}</h4>
                           <p className="text-[10px] text-gray-500">{(template.dias?.length || 0)} Días</p>
                         </div>
                       </div>
@@ -986,7 +1060,7 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
                               repeticiones: '12',
                               descanso: '60s',
                               observaciones: '',
-                              videoUrl: ex.videoUrl,
+                              videoUrl: ex.video_url,
                               tipo: 'Normal'
                             });
                             setRoutineDays(updated);
@@ -997,8 +1071,8 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
                         className="flex items-center gap-4 p-3 bg-white/5 border border-white/5 rounded-2xl hover:bg-lime-500/10 hover:border-lime-500/30 transition-all group text-left"
                       >
                         <div className="w-12 h-12 bg-black rounded-xl overflow-hidden border border-white/10">
-                          {ex.videoUrl ? (
-                            <video src={ex.videoUrl} className="w-full h-full object-cover opacity-50 group-hover:opacity-100" />
+                          {ex.video_url ? (
+                            <video src={ex.video_url} className="w-full h-full object-cover opacity-50 group-hover:opacity-100" />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-gray-700">
                               <Dumbbell className="w-5 h-5" />

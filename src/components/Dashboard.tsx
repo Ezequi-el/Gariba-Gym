@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { User, signOut } from 'firebase/auth';
-import { collection, onSnapshot, query, orderBy, Timestamp, where } from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
+import { User } from '@supabase/supabase-js';
 import { motion, AnimatePresence } from 'motion/react';
 import { Socio, UserProfile, Sucursal } from '../types';
 import { 
@@ -35,7 +34,7 @@ import {
   BookOpen,
   Lock as LockIcon
 } from 'lucide-react';
-import { differenceInDays, isAfter, format, startOfDay, endOfDay } from 'date-fns';
+import { differenceInDays, isAfter, format, startOfDay, endOfDay, parseISO } from 'date-fns';
 import AddSocioModal from './AddSocioModal';
 import EditSocioModal from './EditSocioModal';
 import RenewMembershipModal from './RenewMembershipModal';
@@ -53,7 +52,6 @@ import StaffModule from './StaffModule';
 import CatalogoRutinasModule from './CatalogoRutinasModule';
 import { cn } from '../lib/utils';
 import { Toaster, toast } from 'sonner';
-import { doc, deleteDoc, updateDoc, getDoc, setDoc } from 'firebase/firestore';
 import { TERMS_AND_CONDITIONS, PRIVACY_POLICY } from '../constants/legal';
 import { ShieldCheck, FileText, ArrowRight } from 'lucide-react';
 
@@ -83,20 +81,23 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
   useEffect(() => {
     const fetchProfile = async () => {
       try {
-        const docRef = doc(db, 'users', user.uid);
-        const docSnap = await getDoc(docRef);
+        const { data, error } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('id', user.id)
+          .single();
         
-        if (docSnap.exists()) {
-          const data = docSnap.data() as UserProfile;
+        if (data) {
           // Force owner for the primary admin email
           if (user.email === 'chkereke@gmail.com' && data.role !== 'owner') {
-            const updatedProfile = { ...data, role: 'owner' as const };
-            try {
-              await updateDoc(docRef, { role: 'owner' });
-            } catch (e) {
-              handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`);
+            const { error: updateError } = await supabase
+              .from('user_profiles')
+              .update({ role: 'owner' })
+              .eq('id', user.id);
+            
+            if (!updateError) {
+              setUserProfile({ ...data, role: 'owner' });
             }
-            setUserProfile(updatedProfile);
           } else {
             setUserProfile(data);
           }
@@ -104,27 +105,20 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
           // Create initial profile if it doesn't exist
           const initialRole = user.email === 'chkereke@gmail.com' ? 'owner' : 'receptionist';
           const newProfile: UserProfile = {
-            uid: user.uid,
+            id: user.id,
             email: user.email || '',
             role: initialRole
           };
-          try {
-            await setDoc(docRef, newProfile);
-          } catch (e) {
-            handleFirestoreError(e, OperationType.CREATE, `users/${user.uid}`);
+          const { error: insertError } = await supabase
+            .from('user_profiles')
+            .insert(newProfile);
+          
+          if (!insertError) {
+            setUserProfile(newProfile);
           }
-          setUserProfile(newProfile);
         }
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
-        // Fallback for the owner if fetch fails
-        if (user.email === 'chkereke@gmail.com') {
-          setUserProfile({
-            uid: user.uid,
-            email: user.email || '',
-            role: 'owner'
-          });
-        }
+        console.error("Error fetching profile:", error);
       }
     };
     fetchProfile();
@@ -132,93 +126,98 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
 
   // Fetch Sucursales
   useEffect(() => {
-    const q = collection(db, 'sucursales');
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Sucursal[];
-      setSucursales(data);
+    const fetchSucursales = async () => {
+      const { data, error } = await supabase
+        .from('sucursales')
+        .select('*');
       
-      // Select first branch if none selected
-      if (data.length > 0 && !selectedSucursalId) {
-        setSelectedSucursalId(data[0].id);
+      if (data) {
+        setSucursales(data);
+        if (data.length > 0 && !selectedSucursalId) {
+          setSelectedSucursalId(data[0].id);
+        }
       }
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'sucursales');
-    });
-    return () => unsubscribe();
+    };
+    fetchSucursales();
   }, []);
 
   useEffect(() => {
     if (!selectedSucursalId || sucursales.length === 0) return;
 
     setLoading(true);
-    // Fetch all socios to handle legacy data (missing sucursalId)
-    const qSocios = query(collection(db, 'socios'));
     
-    const unsubscribeSocios = onSnapshot(qSocios, (snapshot) => {
-      const firstBranchId = sucursales[0]?.id;
+    // Fetch socios
+    const fetchSocios = async () => {
+      const { data, error } = await supabase
+        .from('socios')
+        .select('*')
+        .eq('sucursal_id', selectedSucursalId);
       
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Socio[];
+      if (data) {
+        const sorted = [...data].sort((a, b) => {
+          const dateA = a.fecha_vencimiento ? new Date(a.fecha_vencimiento).getTime() : 0;
+          const dateB = b.fecha_vencimiento ? new Date(b.fecha_vencimiento).getTime() : 0;
+          return dateB - dateA;
+        });
+        setSocios(sorted as Socio[]);
+      }
+      setLoading(false);
+    };
+
+    // Fetch today's sales
+    const fetchVentas = async () => {
+      const today = new Date();
+      const start = startOfDay(today).toISOString();
+      const end = endOfDay(today).toISOString();
+
+      const { data, error } = await supabase
+        .from('ventas')
+        .select('total')
+        .eq('sucursal_id', selectedSucursalId)
+        .gte('fecha', start)
+        .lte('fecha', end);
       
-      // Filter by branch, including legacy data in the first branch
-      const filtered = data.filter(s => {
-        if (!s.sucursalId) return selectedSucursalId === firstBranchId;
-        return s.sucursalId === selectedSucursalId;
-      });
+      if (data) {
+        const total = data.reduce((sum, v) => sum + (v.total || 0), 0);
+        setVentasHoy(total);
+      }
+    };
 
-      // Sort in memory by fechaVencimiento desc
-      filtered.sort((a, b) => {
-        const dateA = a.fechaVencimiento?.toMillis() || 0;
-        const dateB = b.fechaVencimiento?.toMillis() || 0;
-        return dateB - dateA;
-      });
+    fetchSocios();
+    fetchVentas();
 
-      setSocios(filtered);
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'socios');
-      setLoading(false);
-    });
+    // Subscribe to changes
+    const sociosChannel = supabase.channel('socios-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'socios', filter: `sucursal_id=eq.${selectedSucursalId}` }, fetchSocios)
+      .subscribe();
 
-    // Listen for today's sales of selected branch
-    const today = new Date();
-    const qVentas = query(
-      collection(db, 'ventas'),
-      where('sucursalId', '==', selectedSucursalId),
-      where('fecha', '>=', Timestamp.fromDate(startOfDay(today))),
-      where('fecha', '<=', Timestamp.fromDate(endOfDay(today)))
-    );
-    const unsubscribeVentas = onSnapshot(qVentas, (snapshot) => {
-      const total = snapshot.docs.reduce((sum, doc) => sum + (doc.data().total || 0), 0);
-      setVentasHoy(total);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'ventas');
-    });
+    const ventasChannel = supabase.channel('ventas-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ventas', filter: `sucursal_id=eq.${selectedSucursalId}` }, fetchVentas)
+      .subscribe();
 
     return () => {
-      unsubscribeSocios();
-      unsubscribeVentas();
+      supabase.removeChannel(sociosChannel);
+      supabase.removeChannel(ventasChannel);
     };
   }, [selectedSucursalId, sucursales]);
 
   useEffect(() => {
-    if (userProfile && userProfile.acceptedTerms === false) {
+    if (userProfile && userProfile.accepted_terms === false) {
       setShowLegalModal(true);
     }
   }, [userProfile]);
 
   const handleAcceptTerms = async () => {
     try {
-      await updateDoc(doc(db, 'users', user.uid), {
-        acceptedTerms: true
-      });
-      setShowLegalModal(false);
-      toast.success('Has aceptado los términos y condiciones');
+      const { error } = await supabase
+        .from('user_profiles')
+        .update({ accepted_terms: true })
+        .eq('id', user.id);
+      
+      if (!error) {
+        setShowLegalModal(false);
+        toast.success('Has aceptado los términos y condiciones');
+      }
     } catch (error) {
       toast.error('Error al aceptar los términos');
     }
@@ -270,19 +269,21 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
 
   const selectedSucursal = sucursales.find(s => s.id === selectedSucursalId);
 
-  const handleLogout = () => signOut(auth);
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
 
   const filteredSocios = socios.filter(s => 
     (s.nombre || "").toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const activeCount = socios.filter(s => {
-    const isExpired = !isAfter(s.fechaVencimiento.toDate(), new Date());
+    const isExpired = !isAfter(new Date(s.fecha_vencimiento), new Date());
     return s.estado === 'Activa' && !isExpired;
   }).length;
 
   const expiredCount = socios.filter(s => {
-    const isExpired = !isAfter(s.fechaVencimiento.toDate(), new Date());
+    const isExpired = !isAfter(new Date(s.fecha_vencimiento), new Date());
     return s.estado === 'Vencida' || (s.estado === 'Activa' && isExpired);
   }).length;
 
@@ -617,8 +618,8 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
                         </tr>
                       ) : (
                         filteredSocios.map((socio) => {
-                          const daysLeft = differenceInDays(socio.fechaVencimiento.toDate(), new Date());
-                          const isExpired = !isAfter(socio.fechaVencimiento.toDate(), new Date());
+                          const daysLeft = differenceInDays(new Date(socio.fecha_vencimiento), new Date());
+                          const isExpired = !isAfter(new Date(socio.fecha_vencimiento), new Date());
                           const effectiveStatus = socio.estado === 'Baneado' ? 'Baneado' : isExpired ? 'Vencida' : socio.estado;
                           
                           return (
@@ -661,7 +662,7 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
                                 </div>
                               </td>
                               <td className="px-6 py-4 text-sm text-gray-400">
-                                {format(socio.fechaVencimiento.toDate(), 'dd/MM/yyyy')}
+                                {format(new Date(socio.fecha_vencimiento), 'dd/MM/yyyy')}
                               </td>
                               <td className="px-6 py-4">
                                 <button 
