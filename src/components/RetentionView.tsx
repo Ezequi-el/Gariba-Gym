@@ -106,10 +106,18 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
   };
 
   const openPersonalizationModal = (item: any) => {
-    setSelectedSocio(item);
+    if (!item) return;
+    
+    // Safety check for regex match
+    const daysMatch = (item.detalle || '').match(/\d+/);
+    const days = daysMatch ? daysMatch[0] : (item.tipo === 'Por vencer' ? 'pocos' : 'varios');
+    const socioName = item.nombre || 'Socio';
+    
     const defaultMsg = item.tipo === 'Por vencer' 
-      ? `Hola ${item.nombre}, te recordamos que tu membresía vence en ${item.detalle.match(/\d+/)[0]} días. ¡Te esperamos para renovar!`
-      : `Hola ${item.nombre}, notamos que no has venido en ${item.detalle.match(/\d+/)[0]} días. ¡Vuelve pronto a entrenar!`;
+      ? `Hola ${socioName}, te recordamos que tu membresía vence en ${days} días. ¡Te esperamos para renovar!`
+      : `Hola ${socioName}, notamos que no has venido en ${days} días. ¡Vuelve pronto a entrenar!`;
+    
+    setSelectedSocio(item);
     setCustomMessage(defaultMsg);
     setIsModalOpen(true);
   };
@@ -500,7 +508,7 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
       {/* MODAL DE PERSONALIZACIÓN */}
       <AnimatePresence>
         {isModalOpen && selectedSocio && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 overflow-y-auto">
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
