@@ -1,1 +1,9 @@
 @import "tailwindcss";
+
+/* Ocultar Vercel Toolbar y el Clippy de feedback */
+vercel-live-feedback, 
+#vercel-live-feedback, 
+.vercel-toolbar,
+[data-vercel-toolbar] { 
+  display: none !important; 
+}
