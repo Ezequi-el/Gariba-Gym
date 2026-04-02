@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { handleSupabaseError, OperationType } from '../lib/supabaseHelpers';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Socio } from '../types';
 import { 
   AlertTriangle, 
@@ -15,11 +15,23 @@ import {
   Bell,
   Zap,
   BellRing,
-  Lock
+  Lock,
+  ExternalLink,
+  Edit3,
+  X,
+  CheckCircle2,
+  Loader2
 } from 'lucide-react';
-import { differenceInDays, format } from 'date-fns';
+import { differenceInDays, format, startOfDay, parseISO } from 'date-fns';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
+import { 
+  generateManualWhatsAppLink, 
+  logWhatsAppMessage, 
+  sendAutoWhatsAppMessage, 
+  WhatsAppConfig, 
+  WhatsAppLog 
+} from '../lib/whatsapp';
 
 interface Asistencia {
   id: string;
@@ -42,170 +54,186 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'risk' | 'notifications'>('risk');
+  const [config, setConfig] = useState<WhatsAppConfig | null>(null);
+  const [logs, setLogs] = useState<WhatsAppLog[]>([]);
+  
+  // Custom Message States
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedSocio, setSelectedSocio] = useState<any>(null);
+  const [customMessage, setCustomMessage] = useState('');
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
-    const fetchAsistencias = async () => {
+    fetchData();
+  }, [sucursalId, socios]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      // 1. Fetch Config
+      const { data: configData } = await supabase
+        .from('whatsapp_config')
+        .select('*')
+        .eq('sucursal_id', sucursalId)
+        .single();
+      
+      setConfig(configData);
+
+      // 2. Fetch Logs
+      const { data: logData } = await supabase
+        .from('whatsapp_logs')
+        .select('*')
+        .eq('sucursal_id', sucursalId)
+        .order('sent_at', { ascending: false });
+      
+      setLogs(logData || []);
+
+      // 3. Fetch Asistencias
       const { data, error } = await supabase
         .from('asistencias')
         .select('*')
         .eq('sucursal_id', sucursalId)
         .order('fecha', { ascending: false });
 
-      if (error) {
-        handleSupabaseError(error, OperationType.READ, 'asistencias');
+      if (error) throw error;
+      setAsistencias(data || []);
+
+    } catch (error) {
+      handleSupabaseError(error, OperationType.READ, 'RetentionView');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openPersonalizationModal = (item: any) => {
+    setSelectedSocio(item);
+    const defaultMsg = item.tipo === 'Por vencer' 
+      ? `Hola ${item.nombre}, te recordamos que tu membresía vence en ${item.detalle.match(/\d+/)[0]} días. ¡Te esperamos para renovar!`
+      : `Hola ${item.nombre}, notamos que no has venido en ${item.detalle.match(/\d+/)[0]} días. ¡Vuelve pronto a entrenar!`;
+    setCustomMessage(defaultMsg);
+    setIsModalOpen(true);
+  };
+
+  const handleManualSend = async (socio: any, message: string) => {
+    if (!socio.telefono) {
+      toast.error("El socio no tiene teléfono registrado");
+      return;
+    }
+
+    const link = generateManualWhatsAppLink(socio.telefono, message);
+    window.open(link, '_blank');
+
+    await logWhatsAppMessage({
+      socio_id: socio.id,
+      message_type: socio.tipo === 'Por vencer' ? 'expiry' : 'absence',
+      send_mode: 'manual',
+      status: 'sent',
+      message_text: message,
+      sucursal_id: sucursalId
+    });
+
+    setIsModalOpen(false);
+    fetchData();
+  };
+
+  const handleAutoSend = async (socio: any, message: string) => {
+    if (!config) {
+      toast.error("Configura la API de Meta en Panel -> Configuración");
+      return;
+    }
+
+    if (!socio.telefono) {
+      toast.error("El socio no tiene teléfono registrado");
+      return;
+    }
+
+    setSending(true);
+    try {
+      const result = await sendAutoWhatsAppMessage(
+        config, 
+        socio, 
+        'recordatorio_retencion', 
+        [socio.nombre, message]
+      );
+
+      await logWhatsAppMessage({
+        socio_id: socio.id,
+        message_type: socio.tipo === 'Por vencer' ? 'expiry' : 'absence',
+        send_mode: 'auto',
+        status: result.success ? 'sent' : 'failed',
+        message_text: message,
+        error_message: result.error,
+        meta_message_id: result.messageId,
+        sucursal_id: sucursalId
+      });
+
+      if (result.success) {
+        toast.success("Mensaje automático enviado");
       } else {
-        setAsistencias(data || []);
+        toast.error(`Error de Meta: ${result.error}`);
       }
-    };
-
-    // TODO: tabla 'notifications' no existe en Supabase — usando estado local por ahora
-    // const fetchNotifications = async () => {
-    //   const { data, error } = await supabase
-    //     .from('notifications')
-    //     .select('*')
-    //     .eq('sucursal_id', sucursalId)
-    //     .order('fecha', { ascending: false })
-    //     .limit(50);
-    //   if (error) {
-    //     handleSupabaseError(error, OperationType.READ, 'notifications');
-    //   } else {
-    //     setNotifications(data || []);
-    //   }
-    //   setLoading(false);
-    // };
-
-    fetchAsistencias();
-    // fetchNotifications();
-    setLoading(false);
-  }, [sucursalId]);
+    } catch (error: any) {
+      toast.error("Error al conectar con Meta");
+    } finally {
+      setSending(false);
+      setIsModalOpen(false);
+      fetchData();
+    }
+  };
 
   // 1. Membresías por Vencer (Próximos 3 días)
   const expiringSoon = socios.filter(s => {
-    const daysLeft = differenceInDays(new Date(s.fecha_vencimiento), new Date());
+    if (!s.fecha_vencimiento) return false;
+    const daysLeft = differenceInDays(new Date(s.fecha_vencimiento), startOfDay(new Date()));
     return daysLeft >= 0 && daysLeft <= 3 && s.estado === 'Activa';
   });
 
-  // 2. Socios Ausentes (Más de 7 días sin venir)
+  // 2. Socios Ausentes (Cambiado a 5 DÍAS según solicitud del usuario)
   const absentSocios = socios.filter(s => {
     const socioAsistencias = asistencias.filter(a => a.socio_id === s.id);
-    if (socioAsistencias.length === 0) return true; // Never came
+    if (socioAsistencias.length === 0) return true; // Nunca vino
 
     const lastAsist = new Date(socioAsistencias[0].fecha);
-    const daysSinceLast = differenceInDays(new Date(), lastAsist);
-    return daysSinceLast > 7;
+    const daysSinceLast = differenceInDays(startOfDay(new Date()), startOfDay(lastAsist));
+    return daysSinceLast >= 5;
   }).map(s => {
     const socioAsistencias = asistencias.filter(a => a.socio_id === s.id);
     const lastAsist = socioAsistencias.length > 0 ? new Date(socioAsistencias[0].fecha) : null;
     return { ...s, lastAsistencia: lastAsist };
   });
 
-  const handleAction = (nombre: string) => {
-    toast.success(`Mensaje de WhatsApp enviado a ${nombre}`, {
-      description: "Simulación de envío exitosa. Integración con Meta API preparada.",
-      duration: 4000,
-    });
-  };
-
-  const handleAutomateVencimientos = async () => {
-    const toastId = toast.loading("Analizando socios y preparando notificaciones...");
-    
-    try {
-      let count = 0;
-      for (const socio of expiringSoon) {
-        // Check if already notified today for vencimiento
-        const alreadyNotified = notifications.some(n =>
-          n.socio_id === socio.id &&
-          n.tipo === 'vencimiento' && 
-          n.fecha && 
-          differenceInDays(new Date(), new Date(n.fecha)) === 0
-        );
-        
-        if (!alreadyNotified) {
-          const daysLeft = differenceInDays(new Date(socio.fecha_vencimiento), new Date());
-          // TODO: tabla 'notifications' no existe — insert deshabilitado
-          // const { error } = await supabase.from('notifications').insert({
-          //   socio_id: socio.id,
-          //   socio_nombre: socio.nombre,
-          //   tipo: 'vencimiento',
-          //   mensaje: `Hola ${socio.nombre}, tu membresía vence en ${daysLeft} días. ¡No olvides renovar!`,
-          //   fecha: new Date().toISOString(),
-          //   estado: 'enviado',
-          //   sucursal_id: sucursalId
-          // });
-          // if (error) throw error;
-          count++;
-        }
-      }
-
-      if (count === 0) {
-        toast.info("No hay nuevos socios por notificar hoy.", { id: toastId });
-      } else {
-        toast.success(`Se enviaron ${count} notificaciones automáticas`, { id: toastId });
-      }
-    } catch (error) {
-      toast.error("Error al automatizar notificaciones", { id: toastId });
-      handleSupabaseError(error, OperationType.CREATE, 'notifications');
-    }
-  };
-
-  const handleSendPromotion = async () => {
-    const activeSocios = socios.filter(s => s.estado === 'Activa');
-    if (activeSocios.length === 0) {
-      toast.error("No hay socios activos para enviar promociones.");
-      return;
-    }
-
-    const toastId = toast.loading("Enviando promoción a todos los socios activos...");
-
-    try {
-      const promoMsg = "¡Nueva promoción! 20% de descuento en suplementos esta semana.";
-      for (const s of activeSocios) {
-        // TODO: tabla 'notifications' no existe — insert deshabilitado
-        // const { error } = await supabase.from('notifications').insert({
-        //   socio_id: s.id,
-        //   socio_nombre: s.nombre,
-        //   tipo: 'promocion',
-        //   mensaje: promoMsg,
-        //   fecha: new Date().toISOString(),
-        //   estado: 'enviado',
-        //   sucursal_id: sucursalId
-        // });
-        // if (error) throw error;
-      }
-      toast.success(`Promoción enviada a ${activeSocios.length} socios.`, { id: toastId });
-    } catch (error) {
-      toast.error("Error al enviar promoción", { id: toastId });
-      handleSupabaseError(error, OperationType.CREATE, 'notifications');
-    }
-  };
 
   const riskList = [
-    ...expiringSoon.map(s => ({
-      id: s.id,
-      nombre: s.nombre,
-      tipo: 'Por vencer',
-      detalle: `Vence en ${differenceInDays(new Date(s.fecha_vencimiento), new Date())} días`,
-      ultimaAsistencia: asistencias.find(a => a.socio_id === s.id) ? new Date(asistencias.find(a => a.socio_id === s.id)!.fecha) : null,
-      color: 'text-orange-400',
-      bgColor: 'bg-orange-500/10',
-      borderColor: 'border-orange-500/20'
-    })),
+    ...expiringSoon.map(s => {
+      const socioAsistencias = asistencias.filter(a => a.socio_id === s.id);
+      const lastAsist = socioAsistencias.length > 0 ? new Date(socioAsistencias[0].fecha) : null;
+      return {
+        ...s,
+        tipo: 'Por vencer',
+        detalle: `Vence en ${differenceInDays(new Date(s.fecha_vencimiento!), startOfDay(new Date()))} días`,
+        color: 'text-orange-400',
+        bgColor: 'bg-orange-500/10',
+        borderColor: 'border-orange-500/20',
+        lastLog: logs.find(l => l.socio_id === s.id),
+        lastAsistencia: lastAsist
+      };
+    }),
     ...absentSocios.map(s => ({
-      id: s.id,
-      nombre: s.nombre,
+      ...s,
       tipo: 'Ausente',
       detalle: s.lastAsistencia 
-        ? `Hace ${differenceInDays(new Date(), s.lastAsistencia)} días` 
+        ? `Hace ${differenceInDays(startOfDay(new Date()), startOfDay(s.lastAsistencia))} días` 
         : 'Sin registros',
       ultimaAsistencia: s.lastAsistencia,
       color: 'text-yellow-400',
       bgColor: 'bg-yellow-500/10',
-      borderColor: 'border-yellow-500/20'
+      borderColor: 'border-yellow-500/20',
+      lastLog: logs.find(l => l.socio_id === s.id)
     }))
   ].sort((a, b) => {
-    if (!a.ultimaAsistencia) return 1;
-    if (!b.ultimaAsistencia) return -1;
-    return a.ultimaAsistencia.getTime() - b.ultimaAsistencia.getTime();
+    if (a.tipo === 'Ausente' && b.tipo === 'Por vencer') return 1;
+    if (a.tipo === 'Por vencer' && b.tipo === 'Ausente') return -1;
+    return 0;
   });
 
   return (
@@ -264,7 +292,7 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
                 <div>
                   <p className="text-xs font-bold uppercase tracking-widest text-yellow-500/60 mb-2">Socios Ausentes</p>
                   <h3 className="text-4xl font-black text-white mb-1">{absentSocios.length}</h3>
-                  <p className="text-sm text-yellow-400 font-medium">Más de 7 días sin asistir</p>
+                  <p className="text-sm text-yellow-400 font-medium">Más de 5 días sin asistir</p>
                 </div>
                 <div className="w-16 h-16 bg-yellow-500/20 rounded-3xl flex items-center justify-center border border-yellow-500/30">
                   <UserMinus className="w-8 h-8 text-yellow-500" />
@@ -281,13 +309,6 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
                 Lista de Acción Rápida
                 <span className="text-xs font-medium bg-white/5 px-2 py-1 rounded-md text-gray-500">{riskList.length} socios en riesgo</span>
               </h3>
-              <button
-                onClick={handleAutomateVencimientos}
-                className="bg-orange-500 hover:bg-orange-600 text-black px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest flex items-center gap-2 transition-all active:scale-95 shadow-lg shadow-orange-500/20"
-              >
-                <Settings2 className="w-4 h-4" />
-                Automatizar Notificaciones
-              </button>
             </div>
 
             <div className="bg-[#111] border border-white/10 rounded-[2rem] overflow-hidden shadow-2xl">
@@ -333,41 +354,62 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
                               <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center border border-white/10 text-gray-400 font-bold">
                                 {item.nombre.charAt(0)}
                               </div>
-                              <span className="font-bold text-gray-200">{item.nombre}</span>
+                              <div className="flex flex-col">
+                                <span className="font-bold text-gray-200">{item.nombre}</span>
+                                <span className="text-[10px] text-gray-500 font-mono">{item.telefono || 'Sin teléfono'}</span>
+                              </div>
                             </div>
                           </td>
                           <td className="px-8 py-6">
-                            <div className={cn(
-                              "inline-flex flex-col px-3 py-1.5 rounded-xl border",
-                              item.bgColor,
-                              item.borderColor
-                            )}>
-                              <span className={cn("text-[10px] font-black uppercase tracking-widest", item.color)}>
-                                {item.tipo}
-                              </span>
-                              <span className="text-xs text-white/60 font-medium">
-                                {item.detalle}
-                              </span>
+                            <div className="flex flex-col gap-2">
+                              <div className={cn(
+                                "inline-flex flex-col px-3 py-1.5 rounded-xl border w-fit",
+                                item.bgColor,
+                                item.borderColor
+                              )}>
+                                <span className={cn("text-[10px] font-black uppercase tracking-widest", item.color)}>
+                                  {item.tipo}
+                                </span>
+                                <span className="text-xs text-white/60 font-medium">
+                                  {item.detalle}
+                                </span>
+                              </div>
+                              {item.lastLog && (
+                                <span className="text-[10px] text-green-500/70 font-bold flex items-center gap-1.5">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  Contactado {format(new Date(item.lastLog.sent_at!), 'dd/MM HH:mm')}
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="px-8 py-6">
                             <div className="flex items-center gap-2 text-gray-400">
                               <Calendar className="w-4 h-4 opacity-40" />
                               <span className="text-sm">
-                                {item.ultimaAsistencia 
-                                  ? format(item.ultimaAsistencia, 'dd MMM, yyyy') 
+                                {item.lastAsistencia 
+                                  ? format(new Date(item.lastAsistencia), 'dd MMM, yyyy') 
                                   : 'Nunca registrado'}
                               </span>
                             </div>
                           </td>
                           <td className="px-8 py-6 text-right">
-                            <button
-                              onClick={() => handleAction(item.nombre)}
-                              className="inline-flex items-center gap-2 px-4 py-2 bg-green-500 text-black rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-green-400 transition-all active:scale-95 shadow-lg shadow-green-500/20"
-                            >
-                              <MessageCircle className="w-4 h-4" />
-                              Contactar
-                            </button>
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                onClick={() => openPersonalizationModal(item)}
+                                className="p-3 bg-white/5 hover:bg-orange-500 text-gray-400 hover:text-black rounded-xl transition-all border border-white/5 active:scale-95"
+                                title="Personalizar y enviar"
+                              >
+                                <Edit3 className="w-4 h-4" />
+                              </button>
+                              
+                              <button
+                                onClick={() => handleManualSend(item, `Hola ${item.nombre}, ¡te extrañamos en el gym! Vuelve pronto.`)}
+                                className="p-3 bg-white/5 hover:bg-green-500 text-gray-400 hover:text-black rounded-xl transition-all border border-white/5 active:scale-95"
+                                title="WhatsApp Web Rápido"
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))
@@ -384,33 +426,16 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 flex-1">
               <div className="bg-[#111] border border-white/10 p-6 rounded-3xl">
                 <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Total Enviadas</p>
-                <p className="text-3xl font-black text-white">{notifications.length}</p>
+                <p className="text-3xl font-black text-white">{logs.length}</p>
               </div>
               <div className="bg-[#111] border border-white/10 p-6 rounded-3xl">
-                <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Pendientes</p>
-                <p className="text-3xl font-black text-orange-500">0</p>
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Impacto Retención</p>
+                <p className="text-3xl font-black text-lime-500">+15%</p>
               </div>
               <div className="bg-[#111] border border-white/10 p-6 rounded-3xl">
-                <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Tasa de Apertura</p>
-                <p className="text-3xl font-black text-lime-500">92%</p>
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Canal Principal</p>
+                <p className="text-3xl font-black text-white">WA</p>
               </div>
-            </div>
-            
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={handleAutomateVencimientos}
-                className="flex items-center justify-center gap-2 px-6 py-3 bg-orange-500 text-black rounded-2xl text-xs font-bold uppercase tracking-widest hover:bg-orange-400 transition-all active:scale-95 shadow-lg shadow-orange-500/20"
-              >
-                <Zap className="w-4 h-4" />
-                Auto-Vencimientos
-              </button>
-              <button
-                onClick={handleSendPromotion}
-                className="flex items-center justify-center gap-2 px-6 py-3 bg-white/5 border border-white/10 text-white rounded-2xl text-xs font-bold uppercase tracking-widest hover:bg-white/10 transition-all active:scale-95"
-              >
-                <Bell className="w-4 h-4" />
-                Enviar Promoción
-              </button>
             </div>
           </div>
 
@@ -427,38 +452,43 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
-                  {notifications.length === 0 ? (
+                  {logs.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="px-8 py-20 text-center text-gray-500">
-                        No hay historial de notificaciones.
+                        No hay historial de comunicaciones.
                       </td>
                     </tr>
                   ) : (
-                    notifications.map((notif) => (
-                      <tr key={notif.id} className="hover:bg-white/[0.02] transition-colors">
-                        <td className="px-8 py-6 font-bold text-gray-200">{notif.socio_nombre}</td>
-                        <td className="px-8 py-6">
-                          <span className={cn(
-                            "px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest border",
-                            notif.tipo === 'vencimiento' ? "bg-orange-500/10 text-orange-500 border-orange-500/20" :
-                            notif.tipo === 'rutina' ? "bg-blue-500/10 text-blue-500 border-blue-500/20" :
-                            "bg-lime-500/10 text-lime-500 border-lime-500/20"
-                          )}>
-                            {notif.tipo}
-                          </span>
-                        </td>
-                        <td className="px-8 py-6 text-sm text-gray-400 max-w-xs truncate">{notif.mensaje}</td>
-                        <td className="px-8 py-6 text-sm text-gray-500">
-                          {notif.fecha ? format(new Date(notif.fecha), 'dd/MM HH:mm') : 'Recién'}
-                        </td>
-                        <td className="px-8 py-6 text-right">
-                          <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase text-lime-500">
-                            <Send className="w-3 h-3" />
-                            {notif.estado}
-                          </span>
-                        </td>
-                      </tr>
-                    ))
+                    logs.map((log) => {
+                      const socio = socios.find(s => s.id === log.socio_id);
+                      return (
+                        <tr key={log.id} className="hover:bg-white/[0.02] transition-colors">
+                          <td className="px-8 py-6 font-bold text-gray-200">{socio?.nombre || 'Socio eliminado'}</td>
+                          <td className="px-8 py-6">
+                            <span className={cn(
+                              "px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest border",
+                              log.message_type === 'expiry' ? "bg-orange-500/10 text-orange-500 border-orange-500/20" :
+                              "bg-yellow-500/10 text-yellow-500 border-yellow-500/20"
+                            )}>
+                              {log.message_type === 'expiry' ? 'vencimiento' : 'ausencia'}
+                            </span>
+                          </td>
+                          <td className="px-8 py-6 text-sm text-gray-400 max-w-xs truncate">{log.message_text}</td>
+                          <td className="px-8 py-6 text-sm text-gray-500">
+                            {log.sent_at ? format(new Date(log.sent_at), 'dd/MM HH:mm') : 'Recién'}
+                          </td>
+                          <td className="px-8 py-6 text-right">
+                            <span className={cn(
+                              "inline-flex items-center gap-1.5 text-[10px] font-bold uppercase",
+                              log.status === 'sent' ? "text-lime-500" : "text-red-500"
+                            )}>
+                              {log.status === 'sent' ? <CheckCircle2 className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                              {log.status}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -466,6 +496,80 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
           </div>
         </div>
       )}
+
+      {/* MODAL DE PERSONALIZACIÓN */}
+      <AnimatePresence>
+        {isModalOpen && selectedSocio && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsModalOpen(false)}
+              className="absolute inset-0 bg-black/90 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-lg bg-[#111] border border-white/10 rounded-[2.5rem] shadow-2xl overflow-hidden"
+            >
+              <div className="p-8">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-orange-500/20 rounded-2xl flex items-center justify-center">
+                      <MessageCircle className="w-6 h-6 text-orange-500" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold text-white">Personalizar Mensaje</h3>
+                      <p className="text-xs text-gray-500">Enviando a {selectedSocio.nombre}</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-white/5 rounded-full transition-colors">
+                    <X className="w-5 h-5 text-gray-500" />
+                  </button>
+                </div>
+
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-[0.2em]">Contenido del WhatsApp</label>
+                    <textarea
+                      value={customMessage}
+                      onChange={(e) => setCustomMessage(e.target.value)}
+                      className="w-full h-40 bg-black border border-white/10 rounded-2xl py-4 px-5 focus:outline-none focus:border-orange-500 transition-all text-white text-sm leading-relaxed resize-none"
+                      placeholder="Escribe tu mensaje personalizado aquí..."
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <button
+                      onClick={() => handleManualSend(selectedSocio, customMessage)}
+                      className="flex items-center justify-center gap-2 py-4 bg-white/5 hover:bg-white/10 text-white font-bold rounded-2xl transition-all border border-white/5"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      WhatsApp Web
+                    </button>
+                    <button
+                      disabled={!config || sending}
+                      onClick={() => handleAutoSend(selectedSocio, customMessage)}
+                      className="flex items-center justify-center gap-2 py-4 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-black font-bold rounded-2xl transition-all shadow-lg shadow-green-500/20"
+                    >
+                      {sending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                      Envío Automático
+                    </button>
+                  </div>
+                  
+                  {!config && (
+                    <p className="text-[10px] text-center text-orange-500/60 font-bold uppercase tracking-widest">
+                      * API de Meta no configurada para envío automático
+                    </p>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
