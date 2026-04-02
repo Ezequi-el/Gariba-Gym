@@ -126,6 +126,7 @@ export default function POS({
       const { data, error } = await supabase
         .from('inventario')
         .select('*')
+        .eq('sucursal_id', sucursalId)
         .order('nombre', { ascending: true });
       
       if (data) {
@@ -246,8 +247,13 @@ export default function POS({
             .single();
           
           if (socioData) {
-            const currentVencimiento = new Date(socioData.fecha_vencimiento);
+            let currentVencimiento = new Date(socioData.fecha_vencimiento);
             const now = new Date();
+            
+            // Si la fecha es inválida o nula, usar la fecha actual como base
+            if (isNaN(currentVencimiento.getTime())) {
+              currentVencimiento = now;
+            }
             
             const baseDate = isAfter(currentVencimiento, now) ? currentVencimiento : now;
             const newVencimiento = addDays(baseDate, totalDiasAAgregar);

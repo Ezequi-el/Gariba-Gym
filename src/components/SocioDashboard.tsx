@@ -68,21 +68,28 @@ interface Asistencia {
 interface Exercise {
   ejercicioId: string;
   nombre: string;
+  nombre_manual?: string;
   series: string;
   repeticiones: string;
   descanso: string;
   observaciones: string;
+  rpe?: string;
+  tempo?: string;
+  tipo?: 'Normal' | 'Superset' | 'Dropset' | 'Circuito';
   videoUrl?: string;
+  notas?: string;
 }
 
 interface DiaRutina {
   nombre: string;
+  notas?: string;
   ejercicios: Exercise[];
 }
 
 interface Routine {
   id: string;
   socio_id: string;
+  nombre?: string;
   dias: DiaRutina[];
   created_at: string;
 }
@@ -164,8 +171,8 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
   };
 
   const handlePasswordChange = async () => {
-    if (!newPassword || newPassword.length < 4) {
-      toast.error("La contraseña debe tener al menos 4 caracteres");
+    if (!newPassword || newPassword.length < 8) {
+      toast.error("La contraseña debe tener al menos 8 caracteres");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -175,15 +182,17 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
 
     setIsChangingPassword(true);
     try {
-      const { error } = await supabase
+      // 1. Update password in Supabase Auth (source of truth)
+      const { error: authError } = await supabase.auth.updateUser({ password: newPassword });
+      if (authError) throw authError;
+
+      // 2. Clear the must_change_password flag in socios
+      const { error: dbError } = await supabase
         .from('socios')
-        .update({
-          password: newPassword,
-          must_change_password: false
-        })
+        .update({ must_change_password: false })
         .eq('id', socio.id);
 
-      if (error) throw error;
+      if (dbError) throw dbError;
 
       toast.success("Contraseña actualizada correctamente");
       setShowPasswordModal(false);
@@ -410,13 +419,46 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
         
         if (asistenciasData) setAsistenciasMes(asistenciasData);
 
-        // Rutinas
-        const { data: rutinasData } = await supabase
-          .from('rutinas')
-          .select('*')
-          .eq('socio_id', socio.id);
+        // Rutinas (Fetching from the new normalized tables)
+        const { data: assignedData } = await supabase
+          .from('rutinas_asignadas')
+          .select(`
+            *,
+            rutina_dias (
+              *,
+              rutina_ejercicios (
+                *,
+                ejercicios (*)
+              )
+            )
+          `)
+          .eq('socio_id', socio.id)
+          .order('fecha_creacion', { ascending: false });
         
-        if (rutinasData) setRutinas(rutinasData);
+        if (assignedData) {
+          setRutinas(assignedData.map(r => ({
+            id: r.id,
+            socio_id: r.socio_id,
+            nombre: r.nombre,
+            created_at: r.fecha_creacion,
+            dias: (r.rutina_dias || []).sort((a: any, b: any) => a.orden - b.orden).map((d: any) => ({
+              nombre: d.nombre,
+              notas: d.notas,
+              ejercicios: (d.rutina_ejercicios || []).sort((a: any, b: any) => a.orden - b.orden).map((ex: any) => ({
+                ejercicioId: ex.ejercicio_id || 'manual',
+                nombre: ex.ejercicio_id ? ex.ejercicios?.nombre : ex.nombre_manual,
+                series: ex.series,
+                repeticiones: ex.repeticiones,
+                descanso: ex.descanso,
+                observaciones: ex.observaciones,
+                rpe: ex.rpe,
+                tempo: ex.tempo,
+                tipo: ex.tipo,
+                videoUrl: ex.ejercicios?.video_url
+              }))
+            }))
+          })) as any);
+        }
 
         // Cierres Gym
         const { data: cierresData } = await supabase
@@ -465,7 +507,7 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
       .subscribe();
 
     const rutinasChannel = supabase.channel('socio-rutinas')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'rutinas', filter: `socio_id=eq.${socio.id}` }, fetchData)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rutinas_asignadas', filter: `socio_id=eq.${socio.id}` }, fetchData)
       .subscribe();
 
     const cierresChannel = supabase.channel('gym-cierres')
@@ -884,7 +926,7 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
               <div className="p-6 border-b border-white/5 bg-white/[0.02]">
                 <div className="flex justify-between items-start mb-4">
                   <div>
-                    <h3 className="font-bold text-lg">Plan de Entrenamiento</h3>
+                    <h3 className="font-bold text-lg">{rutina.nombre || 'Plan de Entrenamiento'}</h3>
                     <div className="flex flex-wrap gap-1 mt-2">
                       {(rutina.dias || []).map((day, dIdx) => (
                         <span key={dIdx} className="text-[10px] font-black uppercase tracking-widest bg-lime-500/10 text-lime-500 px-2 py-0.5 rounded-md border border-lime-500/20">
@@ -949,9 +991,12 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
                                 <p className="font-bold text-sm">{ex.nombre}</p>
                                 <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">
                                   {ex.series} Series • {ex.repeticiones} Reps • {ex.descanso}
+                                  {ex.rpe && ` • RPE ${ex.rpe}`}
+                                  {ex.tempo && ` • Tempo ${ex.tempo}`}
+                                  {ex.tipo && ex.tipo !== 'Normal' && ` • ${ex.tipo}`}
                                 </p>
-                                {ex.observaciones && (
-                                  <p className="text-[10px] text-gray-600 italic mt-0.5">{ex.observaciones}</p>
+                                {(ex.observaciones || ex.notas) && (
+                                  <p className="text-[10px] text-gray-600 italic mt-0.5">{ex.observaciones || ex.notas}</p>
                                 )}
                               </div>
                             </div>
@@ -1368,12 +1413,12 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
             <h3 className="text-sm font-bold uppercase tracking-widest text-gray-500 flex items-center gap-2">
               <Info className="w-4 h-4" /> Próximos Cierres
             </h3>
-            {cierres.filter(c => c.fecha && isAfter(c.fecha.toDate(), new Date())).slice(0, 3).map(c => (
+            {cierres.filter(c => c.fecha && isAfter(new Date(c.fecha), new Date())).slice(0, 3).map(c => (
               <div key={c.id} className="bg-red-500/5 border border-red-500/10 rounded-2xl p-4 flex items-center justify-between">
                 <div>
                   <p className="font-bold text-sm text-red-400">{c.motivo}</p>
                   <p className="text-[10px] text-red-500/60 font-bold uppercase tracking-widest">
-                    {c.fecha && format(c.fecha.toDate(), 'EEEE dd MMMM', { locale: es })}
+                    {c.fecha && format(new Date(c.fecha), 'EEEE dd MMMM', { locale: es })}
                   </p>
                 </div>
                 <ShieldAlert className="w-5 h-5 text-red-500/30" />
@@ -1437,20 +1482,20 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
                 <div className="flex justify-between items-start">
                   <div>
                     <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">
-                      {venta.fecha && format(venta.fecha.toDate(), 'dd MMM, yyyy HH:mm', { locale: es })}
+                      {venta.fecha && format(new Date(venta.fecha), 'dd MMM, yyyy HH:mm', { locale: es })}
                     </p>
                     <div className="flex items-center gap-2 mt-1">
                       <CreditCard className="w-3 h-3 text-gray-600" />
-                      <span className="text-[10px] text-gray-400 font-medium uppercase tracking-tighter">{venta.metodoPago}</span>
+                      <span className="text-[10px] text-gray-400 font-medium uppercase tracking-tighter">{venta.metodo_pago}</span>
                     </div>
                   </div>
                   <span className="font-mono font-bold text-lime-500">${venta.total}</span>
                 </div>
                 <div className="space-y-1 pt-2 border-t border-white/5">
-                  {venta.items.map((item, idx) => (
+                  {(venta.venta_items || []).map((item, idx) => (
                     <div key={idx} className="flex justify-between text-[10px] text-gray-400">
-                      <span>{item.nombre} x{item.cantidad}</span>
-                      <span>${item.precio * item.cantidad}</span>
+                      <span>{item.inventario?.nombre} x{item.cantidad}</span>
+                      <span>${item.precio_unitario * item.cantidad}</span>
                     </div>
                   ))}
                 </div>
@@ -1744,7 +1789,7 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="absolute inset-0 bg-black/90 backdrop-blur-md"
-              onClick={() => !socio.mustChangePassword && setShowPasswordModal(false)}
+              onClick={() => !socio.must_change_password && setShowPasswordModal(false)}
             />
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
@@ -1757,7 +1802,7 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
                   <LockIcon className="w-8 h-8 text-lime-500" />
                 </div>
                 <h3 className="text-xl font-bold text-white">Actualizar Contraseña</h3>
-                {socio.mustChangePassword && (
+                {socio.must_change_password && (
                   <p className="text-xs text-lime-500/60 mt-2">Por seguridad, debes cambiar tu contraseña inicial.</p>
                 )}
               </div>
@@ -1797,7 +1842,7 @@ export default function SocioDashboard({ socio, onLogout }: { socio: Socio, onLo
                   )}
                 </button>
 
-                {!socio.mustChangePassword && (
+                {!socio.must_change_password && (
                   <button
                     onClick={() => setShowPasswordModal(false)}
                     className="w-full text-gray-500 text-xs font-bold uppercase tracking-widest py-2 hover:text-white transition-colors"

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, orderBy, onSnapshot, Timestamp, where, limit, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
+import { handleSupabaseError, OperationType } from '../lib/supabaseHelpers';
 import { motion } from 'motion/react';
 import { Socio } from '../types';
 import { 
@@ -23,17 +23,17 @@ import { cn } from '../lib/utils';
 
 interface Asistencia {
   id: string;
-  socioId: string;
-  fecha: Timestamp;
+  socio_id: string;
+  fecha: string;
 }
 
 interface Notification {
   id: string;
-  socioId: string;
-  socioNombre: string;
+  socio_id: string;
+  socio_nombre: string;
   tipo: 'vencimiento' | 'rutina' | 'promocion';
   mensaje: string;
-  fecha: Timestamp;
+  fecha: string;
   estado: 'enviado' | 'pendiente';
 }
 
@@ -44,65 +44,59 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
   const [activeTab, setActiveTab] = useState<'risk' | 'notifications'>('risk');
 
   useEffect(() => {
-    const qAsistencias = query(
-      collection(db, 'asistencias'), 
-      where('sucursalId', '==', sucursalId),
-      orderBy('fecha', 'desc')
-    );
-    
-    const unsubscribeAsistencias = onSnapshot(qAsistencias, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Asistencia[];
-      setAsistencias(data);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'asistencias');
-    });
+    const fetchAsistencias = async () => {
+      const { data, error } = await supabase
+        .from('asistencias')
+        .select('*')
+        .eq('sucursal_id', sucursalId)
+        .order('fecha', { ascending: false });
 
-    const qNotifications = query(
-      collection(db, 'notifications'),
-      where('sucursalId', '==', sucursalId),
-      orderBy('fecha', 'desc'),
-      limit(50)
-    );
-
-    const unsubscribeNotifications = onSnapshot(qNotifications, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Notification[];
-      setNotifications(data);
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'notifications');
-      setLoading(false);
-    });
-
-    return () => {
-      unsubscribeAsistencias();
-      unsubscribeNotifications();
+      if (error) {
+        handleSupabaseError(error, OperationType.READ, 'asistencias');
+      } else {
+        setAsistencias(data || []);
+      }
     };
+
+    // TODO: tabla 'notifications' no existe en Supabase — usando estado local por ahora
+    // const fetchNotifications = async () => {
+    //   const { data, error } = await supabase
+    //     .from('notifications')
+    //     .select('*')
+    //     .eq('sucursal_id', sucursalId)
+    //     .order('fecha', { ascending: false })
+    //     .limit(50);
+    //   if (error) {
+    //     handleSupabaseError(error, OperationType.READ, 'notifications');
+    //   } else {
+    //     setNotifications(data || []);
+    //   }
+    //   setLoading(false);
+    // };
+
+    fetchAsistencias();
+    // fetchNotifications();
+    setLoading(false);
   }, [sucursalId]);
 
   // 1. Membresías por Vencer (Próximos 3 días)
   const expiringSoon = socios.filter(s => {
-    const daysLeft = differenceInDays(s.fechaVencimiento.toDate(), new Date());
+    const daysLeft = differenceInDays(new Date(s.fecha_vencimiento), new Date());
     return daysLeft >= 0 && daysLeft <= 3 && s.estado === 'Activa';
   });
 
   // 2. Socios Ausentes (Más de 7 días sin venir)
   const absentSocios = socios.filter(s => {
-    const socioAsistencias = asistencias.filter(a => a.socioId === s.id);
+    const socioAsistencias = asistencias.filter(a => a.socio_id === s.id);
     if (socioAsistencias.length === 0) return true; // Never came
-    
-    const lastAsistencia = socioAsistencias[0]; // Already ordered by date desc
-    const daysSinceLast = differenceInDays(new Date(), lastAsistencia.fecha.toDate());
+
+    const lastAsist = new Date(socioAsistencias[0].fecha);
+    const daysSinceLast = differenceInDays(new Date(), lastAsist);
     return daysSinceLast > 7;
   }).map(s => {
-    const socioAsistencias = asistencias.filter(a => a.socioId === s.id);
-    const lastAsistencia = socioAsistencias.length > 0 ? socioAsistencias[0].fecha.toDate() : null;
-    return { ...s, lastAsistencia };
+    const socioAsistencias = asistencias.filter(a => a.socio_id === s.id);
+    const lastAsist = socioAsistencias.length > 0 ? new Date(socioAsistencias[0].fecha) : null;
+    return { ...s, lastAsistencia: lastAsist };
   });
 
   const handleAction = (nombre: string) => {
@@ -119,24 +113,26 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
       let count = 0;
       for (const socio of expiringSoon) {
         // Check if already notified today for vencimiento
-        const alreadyNotified = notifications.some(n => 
-          n.socioId === socio.id && 
+        const alreadyNotified = notifications.some(n =>
+          n.socio_id === socio.id &&
           n.tipo === 'vencimiento' && 
           n.fecha && 
-          differenceInDays(new Date(), n.fecha.toDate()) === 0
+          differenceInDays(new Date(), new Date(n.fecha)) === 0
         );
         
         if (!alreadyNotified) {
-          const daysLeft = differenceInDays(socio.fechaVencimiento.toDate(), new Date());
-          await addDoc(collection(db, 'notifications'), {
-            socioId: socio.id,
-            socioNombre: socio.nombre,
-            tipo: 'vencimiento',
-            mensaje: `Hola ${socio.nombre}, tu membresía vence en ${daysLeft} días. ¡No olvides renovar!`,
-            fecha: serverTimestamp(),
-            estado: 'enviado',
-            sucursalId
-          });
+          const daysLeft = differenceInDays(new Date(socio.fecha_vencimiento), new Date());
+          // TODO: tabla 'notifications' no existe — insert deshabilitado
+          // const { error } = await supabase.from('notifications').insert({
+          //   socio_id: socio.id,
+          //   socio_nombre: socio.nombre,
+          //   tipo: 'vencimiento',
+          //   mensaje: `Hola ${socio.nombre}, tu membresía vence en ${daysLeft} días. ¡No olvides renovar!`,
+          //   fecha: new Date().toISOString(),
+          //   estado: 'enviado',
+          //   sucursal_id: sucursalId
+          // });
+          // if (error) throw error;
           count++;
         }
       }
@@ -148,7 +144,7 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
       }
     } catch (error) {
       toast.error("Error al automatizar notificaciones", { id: toastId });
-      handleFirestoreError(error, OperationType.CREATE, 'notifications');
+      handleSupabaseError(error, OperationType.CREATE, 'notifications');
     }
   };
 
@@ -164,20 +160,22 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
     try {
       const promoMsg = "¡Nueva promoción! 20% de descuento en suplementos esta semana.";
       for (const s of activeSocios) {
-        await addDoc(collection(db, 'notifications'), {
-          socioId: s.id,
-          socioNombre: s.nombre,
-          tipo: 'promocion',
-          mensaje: promoMsg,
-          fecha: serverTimestamp(),
-          estado: 'enviado',
-          sucursalId
-        });
+        // TODO: tabla 'notifications' no existe — insert deshabilitado
+        // const { error } = await supabase.from('notifications').insert({
+        //   socio_id: s.id,
+        //   socio_nombre: s.nombre,
+        //   tipo: 'promocion',
+        //   mensaje: promoMsg,
+        //   fecha: new Date().toISOString(),
+        //   estado: 'enviado',
+        //   sucursal_id: sucursalId
+        // });
+        // if (error) throw error;
       }
       toast.success(`Promoción enviada a ${activeSocios.length} socios.`, { id: toastId });
     } catch (error) {
       toast.error("Error al enviar promoción", { id: toastId });
-      handleFirestoreError(error, OperationType.CREATE, 'notifications');
+      handleSupabaseError(error, OperationType.CREATE, 'notifications');
     }
   };
 
@@ -186,8 +184,8 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
       id: s.id,
       nombre: s.nombre,
       tipo: 'Por vencer',
-      detalle: `Vence en ${differenceInDays(s.fechaVencimiento.toDate(), new Date())} días`,
-      ultimaAsistencia: asistencias.find(a => a.socioId === s.id)?.fecha.toDate() || null,
+      detalle: `Vence en ${differenceInDays(new Date(s.fecha_vencimiento), new Date())} días`,
+      ultimaAsistencia: asistencias.find(a => a.socio_id === s.id) ? new Date(asistencias.find(a => a.socio_id === s.id)!.fecha) : null,
       color: 'text-orange-400',
       bgColor: 'bg-orange-500/10',
       borderColor: 'border-orange-500/20'
@@ -438,7 +436,7 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
                   ) : (
                     notifications.map((notif) => (
                       <tr key={notif.id} className="hover:bg-white/[0.02] transition-colors">
-                        <td className="px-8 py-6 font-bold text-gray-200">{notif.socioNombre}</td>
+                        <td className="px-8 py-6 font-bold text-gray-200">{notif.socio_nombre}</td>
                         <td className="px-8 py-6">
                           <span className={cn(
                             "px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest border",
@@ -451,7 +449,7 @@ export default function RetentionView({ socios, sucursalId }: { socios: Socio[],
                         </td>
                         <td className="px-8 py-6 text-sm text-gray-400 max-w-xs truncate">{notif.mensaje}</td>
                         <td className="px-8 py-6 text-sm text-gray-500">
-                          {notif.fecha ? format(notif.fecha.toDate(), 'dd/MM HH:mm') : 'Recién'}
+                          {notif.fecha ? format(new Date(notif.fecha), 'dd/MM HH:mm') : 'Recién'}
                         </td>
                         <td className="px-8 py-6 text-right">
                           <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase text-lime-500">

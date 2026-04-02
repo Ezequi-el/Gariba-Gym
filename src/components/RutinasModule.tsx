@@ -87,6 +87,7 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
   const [routineDays, setRoutineDays] = useState<DiaRutina[]>([
     { nombre: 'Día 1', ejercicios: [] }
   ]);
+  const [routineName, setRoutineName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [showExerciseCatalog, setShowExerciseCatalog] = useState(false);
@@ -138,6 +139,7 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
         if (diaError) throw diaError;
 
         const ejercicios = dia.ejercicios.map((ex, exIdx) => ({
+          plantilla_id: plantillaData.id,
           dia_id: diaData.id,
           ejercicio_id: ex.ejercicioId === 'manual' ? null : ex.ejercicioId,
           nombre_manual: ex.ejercicioId === 'manual' ? ex.nombre : null,
@@ -165,29 +167,25 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
     }
   };
 
-        const { error: exError } = await supabase
-          .from('plantilla_ejercicios')
-          .insert(ejercicios);
-        
-        if (exError) throw exError;
-      }
-
-      toast.success("Rutina guardada como plantilla");
-    } catch (error: any) {
-      console.error("Error saving template:", error);
-      toast.error("Error al guardar la plantilla: " + error.message);
-    }
-  };
-
   useEffect(() => {
     const fetchData = async () => {
       // Fetch Ejercicios
       const { data: exData } = await supabase.from('ejercicios').select('*').order('nombre');
-      if (exData) setCatalogEjercicios(exData as Ejercicio[]);
+      if (exData) {
+        setCatalogEjercicios(exData.map(ex => ({
+          ...ex,
+          videoUrl: ex.video_url // Map from DB snake_case to camelCase
+        })) as Ejercicio[]);
+      }
 
-      // Fetch Plantillas (Simplified for now, just names)
+      // Fetch Plantillas
       const { data: plData } = await supabase.from('plantillas_rutinas').select('*').eq('sucursal_id', sucursalId);
-      if (plData) setCatalogPlantillas(plData as any);
+      if (plData) {
+        setCatalogPlantillas(plData.map(pl => ({
+          ...pl,
+          name: pl.nombre // Map from DB snake_case to camelCase
+        })) as any);
+      }
 
       // Fetch Socios
       const { data: soData } = await supabase.from('socios').select('id, nombre').eq('sucursal_id', sucursalId);
@@ -204,6 +202,7 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
         setRutinas(ruData.map(r => ({
           id: r.id,
           socio_id: r.socio_id,
+          nombre: r.nombre, // Use the actual routine name from DB
           nombre_socio: r.socios?.nombre || 'Desconocido',
           fecha_creacion: r.fecha_creacion,
           user_id: r.user_id,
@@ -224,19 +223,6 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
     };
 
     fetchData();
-
-    // Real-time subscriptions
-    const channels = [
-      supabase.channel('ejercicios-rutinas').on('postgres_changes', { event: '*', schema: 'public', table: 'ejercicios' }, fetchData).subscribe(),
-      supabase.channel('plantillas-rutinas').on('postgres_changes', { event: '*', schema: 'public', table: 'plantillas_rutinas' }, fetchData).subscribe(),
-      supabase.channel('socios-rutinas').on('postgres_changes', { event: '*', schema: 'public', table: 'socios' }, fetchData).subscribe(),
-      supabase.channel('rutinas-rutinas').on('postgres_changes', { event: '*', schema: 'public', table: 'rutinas_asignadas' }, fetchData).subscribe(),
-      supabase.channel('solicitudes-rutinas').on('postgres_changes', { event: '*', schema: 'public', table: 'solicitudes_rutina' }, fetchData).subscribe(),
-    ];
-
-    return () => {
-      channels.forEach(ch => supabase.removeChannel(ch));
-    };
   }, [sucursalId]);
 
   const handleAtenderSolicitud = async (solicitud: RoutineRequest) => {
@@ -305,6 +291,7 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
         .from('rutinas_asignadas')
         .insert({
           socio_id: selectedSocio,
+          nombre: routineName || `Rutina de ${socios.find(s => s.id === selectedSocio)?.nombre}`,
           sucursal_id: sucursalId,
           user_id: user.id,
           fecha_creacion: new Date().toISOString()
@@ -353,6 +340,7 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
       toast.success('Rutina guardada correctamente');
       
       setSelectedSocio('');
+      setRoutineName('');
       setRoutineDays([{ nombre: 'Día 1', ejercicios: [] }]);
       setShowForm(false);
     } catch (error: any) {
@@ -394,8 +382,6 @@ export default function RutinasModule({ sucursalId }: { sucursalId: string }) {
 
   const filteredRutinas = rutinas.filter(r => 
     (r.nombre_socio?.toLowerCase() || '').includes(searchTerm.toLowerCase())
-  );
-rCase()))
   );
 
   return (
@@ -471,6 +457,19 @@ rCase()))
                         <option key={s.id} value={s.id}>{s.nombre}</option>
                       ))}
                     </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-gray-500 flex items-center gap-2">
+                      <FileText className="w-3 h-3" /> Nombre de la Rutina
+                    </label>
+                    <input 
+                      type="text"
+                      value={routineName}
+                      onChange={(e) => setRoutineName(e.target.value)}
+                      placeholder="Ej: Hipertrofia A, Full Body..."
+                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-lime-500 outline-none transition-colors"
+                    />
                   </div>
 
                   <div className="space-y-2">
@@ -984,7 +983,7 @@ rCase()))
                           <FileText className="w-5 h-5" />
                         </div>
                         <div>
-                          <h4 className="font-bold text-white text-sm">{template.nombre}</h4>
+                          <h4 className="font-bold text-white text-sm">{template.name}</h4>
                           <p className="text-[10px] text-gray-500">{(template.dias?.length || 0)} Días</p>
                         </div>
                       </div>
@@ -1060,7 +1059,7 @@ rCase()))
                               repeticiones: '12',
                               descanso: '60s',
                               observaciones: '',
-                              videoUrl: ex.video_url,
+                              videoUrl: ex.videoUrl,
                               tipo: 'Normal'
                             });
                             setRoutineDays(updated);
@@ -1071,8 +1070,8 @@ rCase()))
                         className="flex items-center gap-4 p-3 bg-white/5 border border-white/5 rounded-2xl hover:bg-lime-500/10 hover:border-lime-500/30 transition-all group text-left"
                       >
                         <div className="w-12 h-12 bg-black rounded-xl overflow-hidden border border-white/10">
-                          {ex.video_url ? (
-                            <video src={ex.video_url} className="w-full h-full object-cover opacity-50 group-hover:opacity-100" />
+                          {ex.videoUrl ? (
+                            <video src={ex.videoUrl} className="w-full h-full object-cover opacity-50 group-hover:opacity-100" />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-gray-700">
                               <Dumbbell className="w-5 h-5" />

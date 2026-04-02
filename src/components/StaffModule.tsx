@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, query, where, doc, updateDoc, setDoc, getDocs, deleteDoc } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
+import { handleSupabaseError, OperationType } from '../lib/supabaseHelpers';
 import { 
   Users, 
   UserPlus, 
@@ -19,7 +19,7 @@ import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 
 interface UserProfile {
-  uid?: string;
+  id?: string;
   email: string;
   nombre?: string;
   fechaNacimiento?: string;
@@ -32,12 +32,11 @@ export default function StaffModule() {
   const [staff, setStaff] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [resetPasswordModal, setResetPasswordModal] = useState<{uid: string, email: string} | null>(null);
-  const [newPassword, setNewPassword] = useState('');
+  const [resetPasswordModal, setResetPasswordModal] = useState<{id: string, email: string} | null>(null);
+  const [isSendingReset, setIsSendingReset] = useState(false);
   const [newUser, setNewUser] = useState({
     nombre: '',
     email: '',
-    password: '',
     fechaNacimiento: '',
     telefono: '',
     role: 'receptionist' as const
@@ -58,72 +57,83 @@ export default function StaffModule() {
   const handleAddStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      // We use email as ID if uid is not available yet (invitation)
-      // Or just a random ID. Let's use a random ID or the email.
       const staffId = newUser.email.replace(/\./g, '_');
-      await setDoc(doc(db, 'users', staffId), {
+      const { error } = await supabase.from('user_profiles').insert({
         ...newUser,
-        uid: staffId, // Placeholder until they log in
+        id: staffId, // Placeholder until they log in
         invited: true
       });
+      if (error) throw error;
       toast.success("Personal agregado correctamente");
       setIsModalOpen(false);
       setNewUser({
         nombre: '',
         email: '',
-        password: '',
         fechaNacimiento: '',
         telefono: '',
         role: 'receptionist'
       });
+      
+      // Refresh staff
+      const { data } = await supabase.from('user_profiles').select('*');
+      setStaff(data || []);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'users');
+      handleSupabaseError(error, OperationType.CREATE, 'user_profiles');
     }
   };
 
   const handleDeleteStaff = async (id: string) => {
     if (!confirm("¿Estás seguro de eliminar a este miembro del staff?")) return;
     try {
-      await deleteDoc(doc(db, 'users', id));
+      const { error } = await supabase.from('user_profiles').delete().eq('id', id);
+      if (error) throw error;
       toast.success("Miembro eliminado");
+      setStaff(prev => prev.filter(p => (p.id || p.email) !== id));
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `users/${id}`);
+      handleSupabaseError(error, OperationType.DELETE, `user_profiles/${id}`);
     }
   };
 
   useEffect(() => {
-    const q = collection(db, 'users');
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        ...doc.data()
-      })) as UserProfile[];
-      setStaff(data);
+    const fetchStaff = async () => {
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('*');
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.READ, 'user_profiles');
+      } else {
+        setStaff(data || []);
+      }
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'users');
-      setLoading(false);
-    });
-    return () => unsubscribe();
+    };
+
+    fetchStaff();
   }, []);
 
-  const handleUpdateRole = async (uid: string, newRole: any) => {
+  const handleUpdateRole = async (id: string, newRole: any) => {
     try {
-      await updateDoc(doc(db, 'users', uid), { role: newRole });
+      const { error } = await supabase.from('user_profiles').update({ role: newRole }).eq('id', id);
+      if (error) throw error;
       toast.success("Rol actualizado correctamente");
+      setStaff(prev => prev.map(p => p.id === id ? { ...p, role: newRole } : p));
     } catch (error) {
       toast.error("Error al actualizar rol");
     }
   };
 
   const handleResetPassword = async () => {
-    if (!resetPasswordModal || !newPassword) return;
+    if (!resetPasswordModal) return;
+    setIsSendingReset(true);
     try {
-      await updateDoc(doc(db, 'users', resetPasswordModal.uid), { password: newPassword });
-      toast.success(`Contraseña de ${resetPasswordModal.email} actualizada`);
+      const { error } = await supabase.auth.resetPasswordForEmail(resetPasswordModal.email);
+      if (error) throw error;
+      toast.success(`Email de restablecimiento enviado a ${resetPasswordModal.email}`);
       setResetPasswordModal(null);
-      setNewPassword('');
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${resetPasswordModal.uid}`);
+      handleSupabaseError(error, OperationType.UPDATE, `auth/reset/${resetPasswordModal.email}`);
+    } finally {
+      setIsSendingReset(false);
     }
   };
 
@@ -198,18 +208,6 @@ export default function StaffModule() {
                     onChange={(e) => setNewUser({...newUser, email: e.target.value})}
                     className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500/50 transition-colors"
                     placeholder="correo@ejemplo.com"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">Contraseña</label>
-                  <input
-                    required
-                    type="password"
-                    value={newUser.password}
-                    onChange={(e) => setNewUser({...newUser, password: e.target.value})}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500/50 transition-colors"
-                    placeholder="••••••••"
                   />
                 </div>
 
@@ -291,16 +289,9 @@ export default function StaffModule() {
               </div>
 
               <div className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Nueva Contraseña</label>
-                  <input
-                    type="password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-lime-500/50 transition-colors"
-                    placeholder="••••••••"
-                  />
-                </div>
+                <p className="text-xs text-gray-400 text-center leading-relaxed">
+                  Se enviará un enlace de restablecimiento al correo del colaborador. Podrá crear una nueva contraseña desde ese enlace.
+                </p>
 
                 <div className="flex gap-3 pt-2">
                   <button
@@ -311,9 +302,10 @@ export default function StaffModule() {
                   </button>
                   <button
                     onClick={handleResetPassword}
-                    className="flex-1 bg-lime-500 hover:bg-lime-600 text-black font-bold py-3 rounded-xl transition-all shadow-lg shadow-lime-500/20 text-xs"
+                    disabled={isSendingReset}
+                    className="flex-1 bg-lime-500 hover:bg-lime-600 disabled:opacity-50 text-black font-bold py-3 rounded-xl transition-all shadow-lg shadow-lime-500/20 text-xs"
                   >
-                    Actualizar
+                    {isSendingReset ? 'Enviando...' : 'Enviar Email'}
                   </button>
                 </div>
               </div>
@@ -341,7 +333,7 @@ export default function StaffModule() {
                   </td>
                 </tr>
               ) : staff.map((member) => (
-                <tr key={member.uid || member.email} className="hover:bg-white/[0.02] transition-colors">
+                <tr key={member.id || member.email} className="hover:bg-white/[0.02] transition-colors">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center">
@@ -384,8 +376,8 @@ export default function StaffModule() {
                         {roles.map((role) => (
                           <button
                             key={role.id}
-                            onClick={() => handleUpdateRole(member.uid!, role.id)}
-                            disabled={member.role === role.id || !member.uid}
+                            onClick={() => handleUpdateRole(member.id!, role.id)}
+                            disabled={member.role === role.id || !member.id}
                             className={cn(
                               "p-2 rounded-lg transition-all",
                               member.role === role.id 
@@ -399,15 +391,15 @@ export default function StaffModule() {
                         ))}
                       </div>
                       <button
-                        onClick={() => setResetPasswordModal({ uid: member.uid!, email: member.email })}
+                        onClick={() => setResetPasswordModal({ id: member.id!, email: member.email })}
                         className="p-2 hover:bg-white/10 text-gray-500 hover:text-lime-500 rounded-lg transition-all"
                         title="Resetear Contraseña"
-                        disabled={!member.uid}
+                        disabled={!member.id}
                       >
                         <LockIcon className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => handleDeleteStaff(member.uid || member.email)}
+                        onClick={() => handleDeleteStaff(member.id || member.email)}
                         className="p-2 hover:bg-red-500/10 text-gray-500 hover:text-red-500 rounded-lg transition-all"
                         title="Eliminar"
                       >

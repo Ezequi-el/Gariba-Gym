@@ -222,7 +222,6 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
       toast.error('Error al aceptar los términos');
     }
   };
-  const [newSocioPassword, setNewSocioPassword] = useState('');
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [editingSocio, setEditingSocio] = useState<Socio | null>(null);
   const [renewingSocio, setRenewingSocio] = useState<Socio | null>(null);
@@ -726,7 +725,7 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
               animate={{ opacity: 1, y: 0 }}
               key={`catalogo-view-${selectedSucursalId}`}
             >
-              <CatalogoRutinasModule />
+              <CatalogoRutinasModule sucursalId={selectedSucursalId} />
             </motion.div>
           ) : view === 'whatsapp' ? (
             <motion.div
@@ -750,7 +749,7 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
               animate={{ opacity: 1, y: 0 }}
               key={`inventario-view-${selectedSucursalId}`}
             >
-              <InventarioModule canManage={hasPermission('manage_inventory')} />
+              <InventarioModule canManage={hasPermission('manage_inventory')} sucursalId={selectedSucursalId} />
             </motion.div>
           ) : view === 'sucursales' ? (
             <motion.div
@@ -949,16 +948,9 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
               </div>
 
               <div className="space-y-4">
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1.5 ml-1">Nueva Contraseña</label>
-                  <input
-                    type="password"
-                    value={newSocioPassword}
-                    onChange={(e) => setNewSocioPassword(e.target.value)}
-                    placeholder="Mínimo 6 caracteres"
-                    className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-lime-500/50 transition-all"
-                  />
-                </div>
+                <p className="text-xs text-gray-400 text-center leading-relaxed">
+                  Se enviará un enlace de restablecimiento al correo del socio. Podrá crear una nueva contraseña desde ese enlace.
+                </p>
 
                 <div className="flex gap-3 pt-2">
                   <button
@@ -969,25 +961,23 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
                   </button>
                   <button
                     onClick={async () => {
-                      if (newSocioPassword.length < 6) {
-                        toast.error('La contraseña debe tener al menos 6 caracteres');
+                      const email = resettingSocioPassword.email;
+                      if (!email) {
+                        toast.error('Este socio no tiene correo registrado');
                         return;
                       }
                       try {
-                        await updateDoc(doc(db, 'socios', resettingSocioPassword.id), {
-                          password: newSocioPassword,
-                          mustChangePassword: true
-                        });
-                        toast.success('Contraseña reseteada correctamente');
+                        const { error } = await supabase.auth.resetPasswordForEmail(email);
+                        if (error) throw error;
+                        toast.success(`Email de restablecimiento enviado a ${email}`);
                         setResettingSocioPassword(null);
-                        setNewSocioPassword('');
-                      } catch (error) {
-                        toast.error('Error al resetear contraseña');
+                      } catch (error: any) {
+                        toast.error('Error al enviar email: ' + (error.message || 'Error desconocido'));
                       }
                     }}
                     className="flex-1 bg-lime-500 hover:bg-lime-600 text-black font-bold py-3 rounded-2xl transition-all shadow-lg shadow-lime-500/20"
                   >
-                    Confirmar
+                    Enviar Email
                   </button>
                 </div>
               </div>
@@ -1026,11 +1016,13 @@ export default function Dashboard({ user, onSwitchToSocio }: { user: User, onSwi
                 <button
                   onClick={async () => {
                     try {
-                      await deleteDoc(doc(db, 'socios', deletingSocio.id));
+                      const { error } = await supabase.from('socios').delete().eq('id', deletingSocio.id);
+                      if (error) throw error;
+                      setSocios(prev => prev.filter(s => s.id !== deletingSocio.id));
                       toast.success('Socio eliminado correctamente');
                       setDeletingSocio(null);
-                    } catch (error) {
-                      toast.error('Error al eliminar socio');
+                    } catch (error: any) {
+                      toast.error('Error al eliminar socio: ' + (error.message || 'Error desconocido'));
                     }
                   }}
                   className="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-2xl transition-all shadow-lg shadow-red-500/20"

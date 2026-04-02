@@ -21,13 +21,13 @@ import {
   ChevronUp,
   FileText
 } from 'lucide-react';
-import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, query, orderBy } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
+import { handleSupabaseError, OperationType } from '../lib/supabaseHelpers';
 import { EXERCISE_CATALOG, ROUTINE_TEMPLATES, getTemplateIcon } from '../constants/gymData';
 import { Ejercicio, PlantillaRutina } from '../types';
 import { toast } from 'sonner';
 
-export default function CatalogoRutinasModule() {
+export default function CatalogoRutinasModule({ sucursalId }: { sucursalId: string }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedMuscle, setSelectedMuscle] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'exercises' | 'templates'>('exercises');
@@ -58,32 +58,66 @@ export default function CatalogoRutinasModule() {
   });
 
   useEffect(() => {
-    const unsubEjercicios = onSnapshot(query(collection(db, 'ejercicios'), orderBy('nombre')), (snapshot) => {
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Ejercicio));
-      if (docs.length === 0 && loading) {
-        // Seed initial data if empty
-        EXERCISE_CATALOG.forEach(ex => addDoc(collection(db, 'ejercicios'), ex));
+    const fetchEjercicios = async () => {
+      const { data, error } = await supabase
+        .from('ejercicios')
+        .select('*')
+        .order('nombre');
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.READ, 'ejercicios');
       } else {
-        setEjercicios(docs);
+        if (data.length === 0 && loading) {
+          // Seed initial data if empty
+          for (const { videoUrl, ...rest } of EXERCISE_CATALOG) {
+            await supabase.from('ejercicios').insert({ ...rest, video_url: videoUrl });
+          }
+          // Re-fetch after seeding
+          const { data: seededData } = await supabase.from('ejercicios').select('*').order('nombre');
+          setEjercicios(seededData || []);
+        } else {
+          setEjercicios(data || []);
+        }
       }
-    });
+    };
 
-    const unsubPlantillas = onSnapshot(query(collection(db, 'plantillas_rutinas'), orderBy('name')), (snapshot) => {
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PlantillaRutina));
-      if (docs.length === 0 && loading) {
-        // Seed initial data if empty
-        ROUTINE_TEMPLATES.forEach(temp => addDoc(collection(db, 'plantillas_rutinas'), temp));
+    const fetchPlantillas = async () => {
+      const { data, error } = await supabase
+        .from('plantillas_rutinas')
+        .select('*')
+        .eq('sucursal_id', sucursalId)
+        .order('nombre');
+
+      if (error) {
+        handleSupabaseError(error, OperationType.READ, 'plantillas_rutinas');
       } else {
-        setPlantillas(docs);
+        if (data.length === 0 && loading) {
+          // Seed initial data if empty
+          for (const temp of ROUTINE_TEMPLATES) {
+            await supabase.from('plantillas_rutinas').insert({
+              nombre: temp.name,
+              descripcion: temp.description,
+              icon: temp.icon,
+              sucursal_id: sucursalId
+            });
+          }
+          // Re-fetch after seeding
+          const { data: seededData } = await supabase
+            .from('plantillas_rutinas')
+            .select('*')
+            .eq('sucursal_id', sucursalId)
+            .order('nombre');
+          setPlantillas(seededData || []);
+        } else {
+          setPlantillas(data || []);
+        }
       }
       setLoading(false);
-    });
-
-    return () => {
-      unsubEjercicios();
-      unsubPlantillas();
     };
-  }, []);
+
+    fetchEjercicios();
+    fetchPlantillas();
+  }, [sucursalId]);
 
   const muscles = Array.from(new Set((ejercicios || []).map(e => e.musculo || 'Otros')));
 
@@ -102,10 +136,14 @@ export default function CatalogoRutinasModule() {
 
     try {
       if (editingEjercicio?.id) {
-        await updateDoc(doc(db, 'ejercicios', editingEjercicio.id), newEjercicio as any);
+        const { videoUrl, ...updateBody } = newEjercicio;
+        const { error } = await supabase.from('ejercicios').update({ ...updateBody, video_url: videoUrl }).eq('id', editingEjercicio.id);
+        if (error) throw error;
         toast.success('Ejercicio actualizado');
       } else {
-        await addDoc(collection(db, 'ejercicios'), newEjercicio);
+        const { videoUrl, ...insertBody } = newEjercicio;
+        const { error } = await supabase.from('ejercicios').insert({ ...insertBody, video_url: videoUrl });
+        if (error) throw error;
         toast.success('Ejercicio creado');
       }
       setIsEjercicioModalOpen(false);
@@ -119,7 +157,7 @@ export default function CatalogoRutinasModule() {
         categoria: 'Fuerza'
       });
     } catch (error) {
-      handleFirestoreError(error, editingEjercicio?.id ? OperationType.UPDATE : OperationType.CREATE, 'ejercicios');
+      handleSupabaseError(error, editingEjercicio?.id ? OperationType.UPDATE : OperationType.CREATE, 'ejercicios');
       toast.error('Error al guardar ejercicio');
     }
   };
@@ -127,10 +165,11 @@ export default function CatalogoRutinasModule() {
   const handleDeleteEjercicio = async (id: string) => {
     if (!confirm('¿Estás seguro de eliminar este ejercicio?')) return;
     try {
-      await deleteDoc(doc(db, 'ejercicios', id));
+      const { error } = await supabase.from('ejercicios').delete().eq('id', id);
+      if (error) throw error;
       toast.success('Ejercicio eliminado');
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `ejercicios/${id}`);
+      handleSupabaseError(error, OperationType.DELETE, `ejercicios/${id}`);
       toast.error('Error al eliminar ejercicio');
     }
   };
@@ -149,17 +188,25 @@ export default function CatalogoRutinasModule() {
 
     try {
       if (editingPlantilla?.id) {
-        await updateDoc(doc(db, 'plantillas_rutinas', editingPlantilla.id), newPlantilla as any);
+        const { error } = await supabase
+          .from('plantillas_rutinas')
+          .update({ nombre: newPlantilla.name, descripcion: newPlantilla.description, icon: newPlantilla.icon })
+          .eq('id', editingPlantilla.id)
+          .eq('sucursal_id', sucursalId);
+        if (error) throw error;
         toast.success('Plantilla actualizada');
       } else {
-        await addDoc(collection(db, 'plantillas_rutinas'), newPlantilla);
+        const { error } = await supabase
+          .from('plantillas_rutinas')
+          .insert({ nombre: newPlantilla.name, descripcion: newPlantilla.description, icon: newPlantilla.icon, sucursal_id: sucursalId });
+        if (error) throw error;
         toast.success('Plantilla creada');
       }
       setIsPlantillaModalOpen(false);
       setEditingPlantilla(null);
       setNewPlantilla({ name: '', description: '', icon: 'Dumbbell', dias: [{ nombre: 'Día 1', ejercicios: [] }] });
     } catch (error) {
-      handleFirestoreError(error, editingPlantilla?.id ? OperationType.UPDATE : OperationType.CREATE, 'plantillas_rutinas');
+      handleSupabaseError(error, editingPlantilla?.id ? OperationType.UPDATE : OperationType.CREATE, 'plantillas_rutinas');
       toast.error('Error al guardar plantilla');
     }
   };
@@ -167,10 +214,11 @@ export default function CatalogoRutinasModule() {
   const handleDeletePlantilla = async (id: string) => {
     if (!confirm('¿Estás seguro de eliminar esta plantilla?')) return;
     try {
-      await deleteDoc(doc(db, 'plantillas_rutinas', id));
+      const { error } = await supabase.from('plantillas_rutinas').delete().eq('id', id).eq('sucursal_id', sucursalId);
+      if (error) throw error;
       toast.success('Plantilla eliminada');
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `plantillas_rutinas/${id}`);
+      handleSupabaseError(error, OperationType.DELETE, `plantillas_rutinas/${id}`);
       toast.error('Error al eliminar plantilla');
     }
   };

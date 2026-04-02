@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, getDocs, orderBy, limit, Timestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
+import { handleSupabaseError, OperationType } from '../lib/supabaseHelpers';
 import { motion, AnimatePresence } from 'motion/react';
 import { Socio } from '../types';
 import { 
@@ -23,13 +23,13 @@ import { cn } from '../lib/utils';
 
 interface Asistencia {
   id: string;
-  fecha: Timestamp;
+  fecha: string;
   sucursalId: string;
 }
 
 interface Venta {
   id: string;
-  fecha: Timestamp;
+  fecha: string;
   total: number;
   items: any[];
   metodoPago: string;
@@ -50,33 +50,29 @@ export default function SocioProfileModal({ socio, onClose }: SocioProfileModalP
     const fetchData = async () => {
       try {
         // Fetch Asistencias
-        const qAsistencias = query(
-          collection(db, 'asistencias'),
-          where('socioId', '==', socio.id)
-        );
-        const snapshotAsistencias = await getDocs(qAsistencias);
-        const dataAsistencias = snapshotAsistencias.docs
-          .map(doc => ({
-            id: doc.id,
-            ...doc.data()
-          })) as Asistencia[];
-        setAsistencias(dataAsistencias.sort((a, b) => b.fecha.toDate().getTime() - a.fecha.toDate().getTime()).slice(0, 20));
+        const { data: dataAsistencias, error: errorAsistencias } = await supabase
+          .from('asistencias')
+          .select('*')
+          .eq('socio_id', socio.id)
+          .order('fecha', { ascending: false })
+          .limit(20);
+        
+        if (errorAsistencias) throw errorAsistencias;
+        setAsistencias(dataAsistencias || []);
 
         // Fetch Ventas
-        const qVentas = query(
-          collection(db, 'ventas'),
-          where('socioId', '==', socio.id)
-        );
-        const snapshotVentas = await getDocs(qVentas);
-        const dataVentas = snapshotVentas.docs
-          .map(doc => ({
-            id: doc.id,
-            ...doc.data()
-          })) as Venta[];
-        setVentas(dataVentas.sort((a, b) => b.fecha.toDate().getTime() - a.fecha.toDate().getTime()).slice(0, 20));
+        const { data: dataVentas, error: errorVentas } = await supabase
+          .from('ventas')
+          .select('*')
+          .eq('socio_id', socio.id)
+          .order('fecha', { ascending: false })
+          .limit(20);
+        
+        if (errorVentas) throw errorVentas;
+        setVentas(dataVentas || []);
 
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, null);
+        handleSupabaseError(error, OperationType.READ, 'socio_profile_data');
       } finally {
         setLoading(false);
       }
@@ -149,11 +145,11 @@ export default function SocioProfileModal({ socio, onClose }: SocioProfileModalP
                 <div className="space-y-3">
                   <div className="flex items-center gap-3 text-sm text-gray-300">
                     <Calendar className="w-4 h-4 text-orange-500/50" />
-                    Inicio: {format(socio.fechaInicio.toDate(), 'dd/MM/yyyy')}
+                    Inicio: {socio.fecha_inicio ? format(new Date(socio.fecha_inicio), 'dd/MM/yyyy') : 'N/A'}
                   </div>
                   <div className="flex items-center gap-3 text-sm text-gray-300">
                     <Clock className="w-4 h-4 text-orange-500/50" />
-                    Vence: {format(socio.fechaVencimiento.toDate(), 'dd/MM/yyyy')}
+                    Vence: {socio.fecha_vencimiento ? format(new Date(socio.fecha_vencimiento), 'dd/MM/yyyy') : 'N/A'}
                   </div>
                 </div>
               </div>
@@ -207,11 +203,11 @@ export default function SocioProfileModal({ socio, onClose }: SocioProfileModalP
                             </div>
                             <div>
                               <p className="text-sm font-medium text-gray-200">Asistencia Registrada</p>
-                              <p className="text-[10px] text-gray-500">{format(asistencia.fecha.toDate(), 'eeee, d MMMM yyyy')}</p>
+                              <p className="text-[10px] text-gray-500">{format(new Date(asistencia.fecha), 'eeee, d MMMM yyyy')}</p>
                             </div>
                           </div>
                           <div className="text-right">
-                            <p className="text-sm font-mono text-gray-400">{format(asistencia.fecha.toDate(), 'HH:mm')}</p>
+                            <p className="text-sm font-mono text-gray-400">{format(new Date(asistencia.fecha), 'HH:mm')}</p>
                           </div>
                         </div>
                       ))}
@@ -234,7 +230,7 @@ export default function SocioProfileModal({ socio, onClose }: SocioProfileModalP
                               <p className="text-sm font-medium text-gray-200">
                                 {venta.items?.map(i => i.nombre).join(', ') || 'Venta'}
                               </p>
-                              <p className="text-[10px] text-gray-500">{format(venta.fecha.toDate(), 'd MMMM yyyy, HH:mm')}</p>
+                              <p className="text-[10px] text-gray-500">{format(new Date(venta.fecha), 'd MMMM yyyy, HH:mm')}</p>
                             </div>
                           </div>
                           <div className="text-right">

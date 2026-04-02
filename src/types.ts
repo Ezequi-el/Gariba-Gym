@@ -9,7 +9,6 @@ export interface Socio {
   user_id?: string;
   sucursal_id?: string;
   must_change_password?: boolean;
-  password?: string;
   accepted_terms?: boolean;
 }
 
@@ -18,6 +17,7 @@ export interface UserProfile {
   email: string;
   role: 'owner' | 'manager' | 'receptionist' | 'trainer';
   sucursal_id?: string;
+  organizacion_id?: string;
   accepted_terms?: boolean;
 }
 
@@ -34,6 +34,7 @@ export interface Ejercicio {
 export interface EjercicioEnPlantilla {
   ejercicioId: string;
   nombre: string;
+  nombre_manual?: string;
   series: string;
   repeticiones: string;
   descanso: string;

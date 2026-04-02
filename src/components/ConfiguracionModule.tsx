@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, addDoc, Timestamp, query, orderBy, deleteDoc, doc } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
+import { handleSupabaseError, OperationType } from '../lib/supabaseHelpers';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Building2, 
@@ -22,7 +22,7 @@ interface Sucursal {
   nombre: string;
   direccion: string;
   telefono: string;
-  fechaCreacion: Timestamp;
+  fecha_creacion: string;
 }
 
 export default function ConfiguracionModule({ canManage = true }: { canManage?: boolean }) {
@@ -37,19 +37,21 @@ export default function ConfiguracionModule({ canManage = true }: { canManage?: 
   });
 
   useEffect(() => {
-    const q = query(collection(db, 'sucursales'), orderBy('fechaCreacion', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Sucursal[];
-      setSucursales(data);
+    const fetchSucursales = async () => {
+      const { data, error } = await supabase
+        .from('sucursales')
+        .select('*')
+        .order('fecha_creacion', { ascending: false });
+
+      if (error) {
+        handleSupabaseError(error, OperationType.READ, 'sucursales');
+      } else {
+        setSucursales(data || []);
+      }
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'sucursales');
-      setLoading(false);
-    });
-    return () => unsubscribe();
+    };
+
+    fetchSucursales();
   }, []);
 
   const handleAddSucursal = async (e: React.FormEvent) => {
@@ -60,15 +62,20 @@ export default function ConfiguracionModule({ canManage = true }: { canManage?: 
     }
 
     try {
-      await addDoc(collection(db, 'sucursales'), {
+      const { error } = await supabase.from('sucursales').insert({
         ...newSucursal,
-        fechaCreacion: Timestamp.now()
+        fecha_creacion: new Date().toISOString()
       });
+      if (error) throw error;
       toast.success("Sucursal agregada correctamente");
       setIsModalOpen(false);
       setNewSucursal({ nombre: '', direccion: '', telefono: '' });
+      
+      // Refresh data
+      const { data } = await supabase.from('sucursales').select('*').order('fecha_creacion', { ascending: false });
+      setSucursales(data || []);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'sucursales');
+      handleSupabaseError(error, OperationType.CREATE, 'sucursales');
       toast.error("Error al agregar sucursal");
     }
   };
@@ -77,11 +84,13 @@ export default function ConfiguracionModule({ canManage = true }: { canManage?: 
     if (!sucursalToDelete) return;
 
     try {
-      await deleteDoc(doc(db, 'sucursales', sucursalToDelete.id));
+      const { error } = await supabase.from('sucursales').delete().eq('id', sucursalToDelete.id);
+      if (error) throw error;
       toast.success("Sucursal eliminada correctamente");
       setSucursalToDelete(null);
+      setSucursales(prev => prev.filter(s => s.id !== sucursalToDelete.id));
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `sucursales/${sucursalToDelete.id}`);
+      handleSupabaseError(error, OperationType.DELETE, `sucursales/${sucursalToDelete.id}`);
       toast.error("Error al eliminar sucursal");
     }
   };
@@ -170,7 +179,7 @@ export default function ConfiguracionModule({ canManage = true }: { canManage?: 
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2 text-sm text-gray-500">
                         <Calendar className="w-4 h-4 text-gray-600" />
-                        {format(sucursal.fechaCreacion.toDate(), 'dd/MM/yyyy')}
+                        {format(new Date(sucursal.fecha_creacion), 'dd/MM/yyyy')}
                       </div>
                     </td>
                     {canManage && (

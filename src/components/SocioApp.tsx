@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import SocioDashboard from './SocioDashboard';
 import { motion, AnimatePresence } from 'motion/react';
-import { Dumbbell, ArrowRight, Mail, AlertCircle, Zap, Lock, UserPlus, Phone, User as UserIcon, ChevronLeft } from 'lucide-react';
+import { Dumbbell, ArrowRight, Mail, AlertCircle, Lock, UserPlus, Phone, User as UserIcon, ChevronLeft } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Socio {
@@ -121,7 +121,26 @@ export default function SocioApp() {
       if (authError) throw authError;
 
       if (authData.user) {
-        // 2. Create record in socios table
+        // 2. Resolve sucursal_id from the configured env var or the first available sucursal
+        const envSucursalId = import.meta.env.VITE_DEFAULT_SUCURSAL_ID as string | undefined;
+        let sucursalId: string;
+
+        if (envSucursalId) {
+          sucursalId = envSucursalId;
+        } else {
+          const { data: sucursalData, error: sucursalError } = await supabase
+            .from('sucursales')
+            .select('id')
+            .limit(1)
+            .single();
+
+          if (sucursalError || !sucursalData) {
+            throw new Error('No hay sucursales configuradas. Contacta al administrador del gimnasio.');
+          }
+          sucursalId = sucursalData.id;
+        }
+
+        // 3. Create record in socios table
         const { error: dbError } = await supabase
           .from('socios')
           .insert({
@@ -132,7 +151,7 @@ export default function SocioApp() {
             estado: 'Vencida',
             fecha_inicio: new Date().toISOString(),
             fecha_vencimiento: new Date().toISOString(),
-            sucursal_id: '00000000-0000-0000-0000-000000000000' // Default or placeholder
+            sucursal_id: sucursalId
           });
 
         if (dbError) throw dbError;
@@ -144,27 +163,6 @@ export default function SocioApp() {
       }
     } catch (err: any) {
       setError(err.message || 'Error al registrarse.');
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleDemoLogin = async () => {
-    setIsLoggingIn(true);
-    setError(null);
-    try {
-      const { data, error } = await supabase
-        .from('socios')
-        .select('*')
-        .limit(1)
-        .single();
-
-      if (error) throw error;
-      if (data) {
-        setSocio(data as Socio);
-      }
-    } catch (err: any) {
-      setError('Error al cargar socio de prueba.');
     } finally {
       setIsLoggingIn(false);
     }
@@ -356,25 +354,6 @@ export default function SocioApp() {
               </form>
             )}
 
-            <div className="w-full mt-6">
-              <div className="relative py-4">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-white/5"></div>
-                </div>
-                <div className="relative flex justify-center text-[10px] uppercase">
-                  <span className="bg-[#0a0a0a] px-2 text-gray-600 font-bold tracking-widest">Para pruebas rápidas</span>
-                </div>
-              </div>
-
-              <button
-                onClick={handleDemoLogin}
-                disabled={isLoggingIn}
-                className="w-full bg-white/5 border border-white/10 hover:bg-white/10 text-gray-400 font-bold py-3 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
-              >
-                <Zap className="w-4 h-4 text-lime-500" />
-                Usar Socio de Prueba
-              </button>
-            </div>
           </motion.div>
         ) : (
           <motion.div

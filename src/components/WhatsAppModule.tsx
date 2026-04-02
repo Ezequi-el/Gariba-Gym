@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, getDocs, Timestamp, orderBy } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { supabase } from '../lib/supabase';
+import { handleSupabaseError, OperationType } from '../lib/supabaseHelpers';
 import { motion } from 'motion/react';
 import { Socio } from '../types';
 import { 
@@ -19,7 +19,7 @@ import { cn } from '../lib/utils';
 
 interface Asistencia {
   socioId: string;
-  fecha: Timestamp;
+  fecha: string;
 }
 
 interface Suggestion {
@@ -43,9 +43,10 @@ export default function WhatsAppModule({ socios, sucursalId }: { socios: Socio[]
 
         // 1. Check for expiry in 3 days or less
         socios.forEach(socio => {
-          const daysLeft = differenceInDays(socio.fechaVencimiento.toDate(), today);
+          if (!socio.fecha_vencimiento) return;
+          const daysLeft = differenceInDays(new Date(socio.fecha_vencimiento), today);
           if (daysLeft <= 3 && socio.estado === 'Activa') {
-            const dateStr = format(socio.fechaVencimiento.toDate(), 'dd/MM/yyyy');
+            const dateStr = format(new Date(socio.fecha_vencimiento), 'dd/MM/yyyy');
             newSuggestions.push({
               socio,
               type: 'expiry',
@@ -56,23 +57,20 @@ export default function WhatsAppModule({ socios, sucursalId }: { socios: Socio[]
         });
 
         // 2. Check for absence > 7 days
-        // We need to fetch the last attendance for each socio
-        const asistenciasRef = collection(db, 'asistencias');
-        const lastAsistencias: Record<string, Date> = {};
-
         // Fetch all asistencias from the last 30 days for this branch
-        const q = query(
-          asistenciasRef, 
-          where('sucursalId', '==', sucursalId),
-          where('fecha', '>=', Timestamp.fromDate(subDays(today, 30))),
-          orderBy('fecha', 'desc')
-        );
-        const snapshot = await getDocs(q);
+        const { data: asistences, error } = await supabase
+          .from('asistencias')
+          .select('socio_id, fecha')
+          .eq('sucursal_id', sucursalId)
+          .gte('fecha', subDays(today, 30).toISOString())
+          .order('fecha', { ascending: false });
         
-        snapshot.docs.forEach(doc => {
-          const data = doc.data() as Asistencia;
-          if (!lastAsistencias[data.socioId]) {
-            lastAsistencias[data.socioId] = data.fecha.toDate();
+        if (error) throw error;
+        
+        const lastAsistencias: Record<string, Date> = {};
+        asistences.forEach(asist => {
+          if (!lastAsistencias[asist.socio_id]) {
+            lastAsistencias[asist.socio_id] = new Date(asist.fecha);
           }
         });
 
@@ -81,7 +79,6 @@ export default function WhatsAppModule({ socios, sucursalId }: { socios: Socio[]
           if (lastDate) {
             const daysAbsent = differenceInDays(today, lastDate);
             if (daysAbsent > 7) {
-              // Avoid duplicate if already in expiry list (optional, but let's keep both if relevant)
               newSuggestions.push({
                 socio,
                 type: 'absence',
@@ -89,15 +86,12 @@ export default function WhatsAppModule({ socios, sucursalId }: { socios: Socio[]
                 daysInfo: daysAbsent
               });
             }
-          } else {
-            // Never attended? Maybe they are new or haven't come in 30+ days
-            // For this demo, let's only suggest if they have at least one record in the last 30 days but > 7 days ago
           }
         });
 
         setSuggestions(newSuggestions);
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, 'asistencias');
+        handleSupabaseError(error, OperationType.READ, 'asistencias');
       } finally {
         setLoading(false);
       }

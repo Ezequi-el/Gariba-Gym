@@ -26,7 +26,7 @@ interface InventarioItem {
   created_at: string;
 }
 
-export default function InventarioModule({ canManage = true }: { canManage?: boolean }) {
+export default function InventarioModule({ canManage = true, sucursalId }: { canManage?: boolean, sucursalId: string }) {
   const [items, setItems] = useState<InventarioItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'producto' | 'servicio'>('producto');
@@ -39,7 +39,7 @@ export default function InventarioModule({ canManage = true }: { canManage?: boo
     precio: '',
     tipo: 'producto' as 'producto' | 'servicio',
     categoria: '',
-    duracion_dias: '30'
+    duracion_dias: ''
   });
 
   useEffect(() => {
@@ -47,8 +47,9 @@ export default function InventarioModule({ canManage = true }: { canManage?: boo
       const { data, error } = await supabase
         .from('inventario')
         .select('*')
-        .order('created_at', { ascending: false });
-      
+        .eq('sucursal_id', sucursalId)
+        .order('fecha_creacion', { ascending: false });
+
       if (error) {
         console.error("Error fetching inventory:", error);
         toast.error("Error al cargar el inventario");
@@ -61,14 +62,19 @@ export default function InventarioModule({ canManage = true }: { canManage?: boo
     fetchItems();
 
     const channel = supabase
-      .channel('inventario-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventario' }, fetchItems)
+      .channel(`inventario-changes-${sucursalId}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'inventario',
+        filter: `sucursal_id=eq.${sucursalId}`
+      }, fetchItems)
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [sucursalId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -93,13 +99,14 @@ export default function InventarioModule({ canManage = true }: { canManage?: boo
         const { error } = await supabase
           .from('inventario')
           .update(itemData)
-          .eq('id', editingItem.id);
+          .eq('id', editingItem.id)
+          .eq('sucursal_id', sucursalId);
         if (error) throw error;
         toast.success("Ítem actualizado correctamente");
       } else {
         const { error } = await supabase
           .from('inventario')
-          .insert(itemData);
+          .insert({ ...itemData, sucursal_id: sucursalId });
         if (error) throw error;
         toast.success("Ítem agregado al inventario");
       }

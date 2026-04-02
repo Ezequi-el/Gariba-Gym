@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { motion } from 'motion/react';
-import { X, UserPlus, Mail, CheckCircle2, Phone, Lock as LockIcon } from 'lucide-react';
-import { format } from 'date-fns';
+import { X, UserPlus, Mail, CheckCircle2, Phone } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface AddSocioModalProps {
@@ -15,7 +14,6 @@ export default function AddSocioModal({ onClose, userId, sucursalId }: AddSocioM
   const [nombre, setNombre] = useState('');
   const [email, setEmail] = useState('');
   const [telefono, setTelefono] = useState('');
-  const [password, setPassword] = useState(format(new Date(), 'yyyyMMdd'));
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
 
@@ -51,7 +49,6 @@ export default function AddSocioModal({ onClose, userId, sucursalId }: AddSocioM
           nombre,
           email: normalizedEmail,
           telefono,
-          password_plain: password,
           must_change_password: true,
           fecha_inicio: fechaInicio.toISOString(),
           fecha_vencimiento: fechaVencimiento.toISOString(),
@@ -155,21 +152,7 @@ export default function AddSocioModal({ onClose, userId, sucursalId }: AddSocioM
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">Contraseña Temporal</label>
-                  <div className="relative">
-                    <LockIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-                    <input
-                      required
-                      type="text"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Contraseña"
-                      className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-10 pr-4 focus:outline-none focus:border-orange-500/50 transition-colors"
-                    />
-                  </div>
-                  <p className="text-[10px] text-gray-500 mt-2 italic">Por defecto es la fecha de hoy (AAAAMMDD). El socio deberá cambiarla al entrar.</p>
-                </div>
+
               </div>
 
               <div className="flex gap-3 pt-4">
